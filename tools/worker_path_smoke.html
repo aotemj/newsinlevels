@@ -103,10 +103,20 @@ let started = false;
       !d2.querySelector('#player [data-a="shadow"]').disabled);
 
     // sentence marks drawn on the scrub bar
-    note('scrub.marks', d2.querySelectorAll('.marks i').length);
-
     const audio = d2.querySelector('#audio');
     note('audio.duration', audio.duration ? +audio.duration.toFixed(2) : null);
+    // give durationchange a moment; marks depend on a settled duration
+    for (let i = 0; i < 15 && !d2.querySelectorAll('.marks i').length; i++) await wait(200);
+    note('scrub.marks', d2.querySelectorAll('.marks i').length);
+    note('scrub.marks_match_sentences',
+      d2.querySelectorAll('.marks i').length === d2.querySelectorAll('#reader-body .article .s').length);
+    note('scrub.mark_left_percent',
+      [...d2.querySelectorAll('.marks i')].slice(0, 3).map(n => n.style.left));
+    note('duration_sources', {
+      media: w2.__nil.player.audio.duration || null,
+      from_index: w2.__nil.player.knownDur || null,
+      used_for_marks: w2.__nil.player._effectiveDuration(),
+    });
     const P = w2.__nil.player;
     note('player.times_first3', (P.times || []).slice(0, 3).map(t => t.map(x => +x.toFixed(2))));
     note('player.times_last', (P.times || []).slice(-1).map(t => t.map(x => +x.toFixed(2))));

@@ -428,6 +428,7 @@ async function openLevel(lv, { autoplay = true, restore = null } = {}) {
     sid: data.id, level: Number(lv), track: L.audio.track, secret: L.audio.secret,
     title: meta.title || data.title, image: data.img,
     sentences: current.sentences || [],
+    dur: (meta.dur || {})[lv] || 0,
     autoplay,
   });
   if (restore && restore.pos && player.audio.duration) player.seek(restore.pos, true);

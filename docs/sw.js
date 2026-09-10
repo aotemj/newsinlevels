@@ -8,7 +8,10 @@
  *              IndexedDB and played through a blob: URL, which keeps HTTP Range
  *              seeking intact (a cached 200 cannot answer a Range request).
  */
-const VERSION = "nil-v1";
+// Bump on every shell change: `activate` drops caches that do not start with the
+// current VERSION, so an installed PWA picks the new assets up on next launch
+// instead of serving one stale load first.
+const VERSION = "nil-v2";
 const SHELL = `${VERSION}-shell`;
 const DATA = `${VERSION}-data`;
 const IMG = `${VERSION}-img`;

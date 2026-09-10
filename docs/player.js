@@ -62,6 +62,7 @@ class Player extends EventTarget {
     this.times = null;
     this.confidence = 0;
     this.active = -1;
+    this.knownDur = 0;       // duration from the index, used until the media loads
     this.loopIndex = -1;
     this.shadowIndex = -1;
     this.loopClip = false;
@@ -81,6 +82,10 @@ class Player extends EventTarget {
     a.addEventListener("pause", () => this._repaint());
     a.addEventListener("ended", () => this._onEnded());
     a.addEventListener("loadedmetadata", () => { this._repaint(); this._emit("meta"); });
+    // `duration` can still be 0/NaN when the timings finish computing, which made
+    // _paintMarks bail and never retry -- so the sentence marks on the scrub bar
+    // silently went missing. Repaint once the duration actually settles.
+    a.addEventListener("durationchange", () => { this._paintMarks(); this._emit("meta"); });
     a.addEventListener("progress", () => this._paintBuffer());
     a.addEventListener("error", () => this._fail());
   }
@@ -99,10 +104,13 @@ class Player extends EventTarget {
   }
 
   /* ------------------------------------------------------- load a clip */
-  async load({ sid, level, track, secret, title, image, sentences, autoplay = true }) {
+  async load({ sid, level, track, secret, title, image, sentences, dur, autoplay = true }) {
     const same = this.track === track && this.sid === sid && this.level === level;
     this.sid = sid; this.level = level; this.track = track; this.secret = secret || null;
     this.title = title; this.image = image; this.sentences = sentences || [];
+    // duration baked from the podcast feed: lets the sentence marks be drawn
+    // immediately instead of waiting for the media to load
+    this.knownDur = Number(dur) > 0 ? Number(dur) : 0;
     if (same) { if (autoplay) this.play(); this._repaint(); return; }
 
     this.times = null; this.confidence = 0; this.active = -1;
@@ -344,7 +352,7 @@ class Player extends EventTarget {
     if (!this.el) return;
     this._mediaSession();
     const a = this.audio;
-    const d = a.duration || 0, t = a.currentTime || 0;
+    const d = this._effectiveDuration(), t = a.currentTime || 0;
     const seg = this._hasSeg();
     const rate = a.playbackRate || 1;
     const saved = this.saved;
@@ -477,7 +485,7 @@ class Player extends EventTarget {
 
   _paintNow(forced) {
     if (!this.el) return;
-    const a = this.audio, d = a.duration || 0;
+    const a = this.audio, d = this._effectiveDuration();
     const t = forced != null ? forced : (a.currentTime || 0);
     const pct = d ? (t / d) * 100 : 0;
     const now = this.el.querySelector(".now");
@@ -499,10 +507,21 @@ class Player extends EventTarget {
     if (buf) buf.style.width = `${clamp((end / d) * 100, 0, 100)}%`;
   }
 
+  /** The duration to show and to lay sentence marks out against: the real one
+   *  once the media has loaded, otherwise the duration baked into the index, so
+   *  the player reads correctly as soon as the timings exist instead of
+   *  depending on a media load that a headless/background tab may never do. */
+  _effectiveDuration() {
+    const d = this.audio.duration;
+    if (isFinite(d) && d > 0) return d;
+    return this.knownDur || 0;
+  }
+
   _paintMarks() {
     if (!this.el || !this._hasSeg()) return;
-    const box = this.el.querySelector(".marks"), d = this.audio.duration || 0;
-    if (!box || !d) return;
+    const box = this.el.querySelector(".marks");
+    const d = this._effectiveDuration();
+    if (!box || !d) return;                 // retried on durationchange
     box.innerHTML = this.times
       .map(([s]) => `<i style="left:${(s / d) * 100}%"></i>`).join("");
   }
