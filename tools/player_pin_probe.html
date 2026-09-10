@@ -1,0 +1,123 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>player pin probe</title>
+<style>html,body{margin:0}iframe{width:390px;height:844px;border:2px solid #f0f}</style>
+</head><body>
+<iframe id="app"></iframe>
+<script>
+/**
+ * Is #player actually pinned to the bottom of the viewport?
+ *
+ * Measures its bounding rect before and after scrolling, and dumps the computed
+ * position/bottom of both fixed layers.  A pinned element keeps the same
+ * distance from the viewport bottom no matter how far the document scrolls.
+ */
+const R = { steps: [], errors: [], finished: false };
+const send = () => fetch('/report', { method: 'POST', body: JSON.stringify(R) });
+const note = (k, v) => { R.steps.push([k, v]); send(); };
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+const params = new URLSearchParams(location.search);
+const WORKER = params.get('worker') || '';
+const frame = document.getElementById('app');
+frame.src = './index.html' + (WORKER ? '?worker=' + encodeURIComponent(WORKER) : '');
+
+(async function run() {
+  let w, d;
+  for (;;) {
+    await wait(200);
+    try { w = frame.contentWindow; d = frame.contentDocument; if (w && w.__nil) break; } catch (e) {}
+  }
+  w.addEventListener('error', e => R.errors.push('error: ' + (e.message || e)));
+  w.addEventListener('unhandledrejection', e => R.errors.push('rejection: ' + (e.reason && e.reason.message || e.reason)));
+
+  try {
+    note('viewport', { innerHeight: w.innerHeight, innerWidth: w.innerWidth });
+
+    w.location.hash = '#/s/paris-butter-shop';
+    for (let i = 0; i < 100; i++) {
+      await wait(200);
+      if (d.querySelector('#reader-body .article p')) break;
+    }
+    await wait(800);
+
+    const measure = (label) => {
+      const pl = d.querySelector('#player');
+      const tabs = d.querySelector('#tabs');
+      const bar = d.querySelector('.bottombar');
+      const r = pl.getBoundingClientRect();
+      const t = tabs.getBoundingClientRect();
+      const b = bar.getBoundingClientRect();
+      const cs = w.getComputedStyle(pl);
+      const cbar = w.getComputedStyle(bar);
+      const bs = w.getComputedStyle(d.body);
+      const vh = w.innerHeight;
+      note(label, {
+        scrollY: Math.round(w.scrollY),
+        docHeight: d.documentElement.scrollHeight,
+        // the bar group must sit flush against the bottom of the viewport
+        barBottom: Math.round(b.bottom),
+        barGapToViewportBottom: Math.round(vh - b.bottom),
+        barPosition: cbar.position,
+        barBottomCss: cbar.bottom,
+        // the player is a normal block inside that bar, so it cannot be displaced
+        playerTop: Math.round(r.top),
+        playerBottom: Math.round(r.bottom),
+        playerPosition: cs.position,
+        playerFullyVisible: r.top >= 0 && r.bottom <= vh,
+        tabsTop: Math.round(t.top),
+        tabsFullyVisible: t.bottom <= vh,
+        playerInsideBottombar: bar.contains(pl),
+        tabsInsideBottombar: bar.contains(tabs),
+        bodyPaddingBottom: bs.paddingBottom,
+      });
+    };
+
+    measure('at_rest');
+
+    // scroll a long way down the article
+    w.scrollTo(0, 700);
+    await wait(500);
+    measure('after_scroll_700');
+
+    w.scrollTo(0, 4000);
+    await wait(500);
+    measure('after_scroll_4000');
+
+    // and back to the top
+    w.scrollTo(0, 0);
+    await wait(400);
+    measure('back_at_top');
+
+    // switching levels rebuilds the player DOM -- it must stay put
+    const t2 = d.querySelectorAll('.seg-tabs button');
+    if (t2.length > 1) { t2[2].click(); await wait(1200); }
+    measure('after_level_switch');
+
+    // and so must closing/reopening the player by leaving and returning
+    w.location.hash = '#/';
+    await wait(700);
+    note('player_hidden_on_list', d.querySelector('#player').hidden);
+    w.location.hash = '#/s/paris-butter-shop';
+    await wait(1500);
+    measure('after_route_round_trip');
+
+    // structural guarantee: nothing on the path may create a containing block
+    const chain = [];
+    let el = d.querySelector('#player').parentElement;
+    while (el && el !== d.documentElement) {
+      const s = w.getComputedStyle(el);
+      const suspicious = ['transform', 'filter', 'perspective', 'backdropFilter', 'contain']
+        .filter(p => s[p] && s[p] !== 'none');
+      chain.push({ el: el.tagName + (el.id ? '#' + el.id : '') + (el.className ? '.' + String(el.className).split(' ').join('.') : ''),
+                   position: s.position, suspicious });
+      el = el.parentElement;
+    }
+    note('ancestor_chain', chain);
+  } catch (e) {
+    R.fatal = String(e && e.stack || e);
+  }
+  R.errors = [...new Set(R.errors)].slice(0, 20);
+  R.finished = true;
+  send();
+})();
+setTimeout(() => { R.finished = true; R.timeout = true; send(); }, 80000);
+</script></body></html>

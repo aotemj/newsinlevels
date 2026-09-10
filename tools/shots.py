@@ -90,8 +90,6 @@ def main():
     failures = []
     for name, extra, route, budget in SHOTS:
         out = os.path.join(outdir, name)
-        if os.path.exists(out):
-            os.remove(out)
         cmd = [CHROME, "--headless=new", "--disable-gpu", "--no-first-run",
                "--no-default-browser-check", "--hide-scrollbars",
                "--force-device-scale-factor=1",
@@ -99,11 +97,24 @@ def main():
                "--window-size=390,844",
                f"--virtual-time-budget={budget}",
                f"--screenshot={out}", base + extra + route]
-        if capture(cmd, out):
-            print(f"{name:16} {os.path.getsize(out)/1024:7.1f} KB   {route}")
+        # Chrome occasionally writes nothing on the first try; retry before
+        # declaring failure, and never delete the previous good file until a new
+        # one has actually been written.
+        ok = False
+        attempt = 0
+        for attempt in range(2):
+            if os.path.exists(out):
+                os.remove(out)
+            ok = capture(cmd, out, timeout=75 + attempt * 30)
+            if ok:
+                break
+            time.sleep(1.5)
+        if ok:
+            print(f"{name:16} {os.path.getsize(out)/1024:7.1f} KB   {route}"
+                  + ("" if attempt == 0 else f"   (retry {attempt})"))
         else:
             failures.append((name, "no/blank file"))
-            print(f"{name:16} FAILED                {route}")
+            print(f"{name:16} FAILED                {route}", file=sys.stderr)
 
     worker.send_signal(signal.SIGTERM)
     for name, why in failures:

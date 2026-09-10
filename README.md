@@ -205,16 +205,23 @@ Everything below runs the real code in a real browser via headless Chrome —
 nothing is mocked.
 
 ```bash
+# everything at once (this is the one to run after a change)
+python tools/run_suite.py
+python tools/run_suite.py pin full         # a subset by name
+
+# or drive one harness directly
+python tools/browser_probe.py tools/player_pin_probe.html --root docs --wait 160 \
+    --query "worker=https://nil-audio.you.workers.dev"   # bottom-bar pinning
 # degraded path -- asserts the sentence controls are DISABLED and say why
-python tools/browser_probe.py tools/app_smoke.html --root docs --wait 180 \
+python tools/browser_probe.py tools/app_smoke.html --root docs --wait 190 \
     --query "worker=off"
 # the same suite against the live resolver
-python tools/browser_probe.py tools/app_smoke.html --root docs --wait 180 \
+python tools/browser_probe.py tools/app_smoke.html --root docs --wait 190 \
     --query "worker=https://nil-audio.you.workers.dev"
 
-python tools/browser_probe.py tools/worker_path_smoke.html --root docs --wait 220
+python tools/browser_probe.py tools/worker_path_smoke.html --root docs --wait 230
 # ...or against a real deployment instead of the local wrapper:
-python tools/browser_probe.py tools/worker_path_smoke.html --root docs --wait 220 \
+python tools/browser_probe.py tools/worker_path_smoke.html --root docs --wait 230 \
     --query "worker=https://nil-audio.you.workers.dev"
 python tools/browser_probe.py tools/cors_audio_probe.html --root docs --wait 170
 node worker/test_local.mjs 2396246388                  # public track
@@ -235,6 +242,27 @@ degraded path stays testable after you deploy.
 python scraper/sync.py --window 150      # refresh
 python scraper/sync.py --window 60       # a smaller window, e.g. for a slower phone
 python scraper/sync.py --no-categories   # skip the topic crawl
+```
+
+### Layout note — one trap worth not re-introducing
+
+The player and the tab bar live inside a single `position: fixed; bottom: 0`
+container (`.bottombar`) and stack as ordinary blocks. Keep it that way.
+
+The obvious alternative — `#player { position: fixed; bottom: calc(56px +
+var(--safe-b)) }` with `--safe-b: env(safe-area-inset-bottom, 0px)` — breaks in
+the wild: if that substitution cannot resolve it is invalid **at computed-value
+time**, which *resets* the property (`bottom` -> `auto`), and a fixed element with
+`bottom: auto` sits at its static-flow position, i.e. parked in the middle of the
+article while the tab bar (literal `bottom: 0`) stays correctly pinned. It looks
+exactly like "the play button doesn't stay at the bottom".
+
+If you do need `env()` somewhere, never route it through a custom property into
+`calc()`. Write the literal first and the `env()` version second, so an
+unsupported `env()` drops only that declaration:
+
+```css
+.toast { bottom: 120px; bottom: calc(120px + env(safe-area-inset-bottom, 0px)); }
 ```
 
 `sync.py` refuses to publish and exits non-zero if the scrape looks broken

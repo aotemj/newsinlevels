@@ -43,13 +43,18 @@ addEventListener("unhandledrejection", (e) => window.__errs.push("rejection: " +
      keeps going while the user reads other screens (Android background audio) -->
 <audio id="audio" preload="metadata" playsinline></audio>
 
-<section id="player" class="player" hidden></section>
+<!-- The player and the tab bar share one fixed container: their stacking is then
+     plain flow inside it, so neither depends on viewport-position maths (which
+     is how the player used to end up parked mid-article). -->
+<div class="bottombar">
+  <section id="player" class="player" hidden></section>
 
-<nav id="tabs" class="tabs">
-  <a href="#/" data-tab="read">Read</a>
-  <a href="#/vocab" data-tab="vocab">Words</a>
-  <a href="#/saved" data-tab="saved">Saved</a>
-</nav>
+  <nav id="tabs" class="tabs">
+    <a href="#/" data-tab="read">Read</a>
+    <a href="#/vocab" data-tab="vocab">Words</a>
+    <a href="#/saved" data-tab="saved">Saved</a>
+  </nav>
+</div>
 
 <div id="toast" class="toast" hidden></div>
 
