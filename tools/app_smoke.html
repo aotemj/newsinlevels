@@ -1,0 +1,213 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>app smoke</title>
+<style>html,body{margin:0}iframe{width:390px;height:800px;border:1px solid #ccc}</style>
+</head><body>
+<iframe id="app"></iframe>
+<script>
+/**
+ * Drives docs/index.html inside a same-origin iframe and reports what the real
+ * app does: rendering, filtering, navigation, reading view and the player.
+ * Nothing here is mocked -- if a step fails the report says so.
+ *
+ * Pass --query "worker=off" to exercise the degraded path (no resolver), or a
+ * real worker URL to exercise the full path.
+ */
+const R = { steps: [], errors: [], finished: false };
+const send = () => fetch('/report', { method: 'POST', body: JSON.stringify(R) });
+const note = (k, v) => { R.steps.push([k, v]); send(); };
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+async function until(fn, ms = 12000, every = 150) {
+  const t0 = Date.now();
+  for (;;) {
+    try { const v = fn(); if (v) return v; } catch (e) {}
+    if (Date.now() - t0 > ms) throw new Error('timeout waiting');
+    await wait(every);
+  }
+}
+
+const frame = document.getElementById('app');
+// forward ?worker=… (and any other flag) to the app inside the iframe, so the
+// harness and the app agree on which mode is under test
+const forwarded = new URLSearchParams(location.search).get('worker');
+frame.src = './index.html' + (forwarded ? '?worker=' + encodeURIComponent(forwarded) : '');
+
+let started = false;
+(async function run() {
+  // an iframe fires `load` for its initial about:blank document too, so wait for
+  // the app itself rather than for the first load event
+  let w, d;
+  for (;;) {
+    await wait(200);
+    try {
+      w = frame.contentWindow;
+      d = frame.contentDocument;
+      if (w && w.__nil) break;
+    } catch (e) {}
+  }
+  if (started) return;
+  started = true;
+  w.addEventListener('error', (e) => R.errors.push('error: ' + (e.message || e)));
+  w.addEventListener('unhandledrejection', (e) => R.errors.push('rejection: ' + (e.reason && e.reason.message || e.reason)));
+
+  try {
+    // ---------- list view
+    const cards = await until(() => d.querySelectorAll('#cards .card').length >= 10 ? d.querySelectorAll('#cards .card') : null);
+    note('list.cards_rendered', cards.length);
+    note('list.first_title', cards[0].querySelector('.t').textContent.trim());
+    note('list.first_href', cards[0].getAttribute('href'));
+    note('list.has_thumb', !!cards[0].querySelector('img.thumb'));
+    note('list.level_chips', d.querySelectorAll('#lvchips .chip').length);
+    note('list.category_chips', d.querySelectorAll('#catchips .chip').length);
+
+    // the level chip chooses which level a story opens at (it is not a list
+    // filter: every story in the window has all three levels)
+    d.querySelectorAll('#lvchips .chip')[2].click();           // "Level 2"
+    await wait(500);
+    note('lvchip.readLevel_saved', JSON.parse(w.localStorage.getItem('nil.settings') || '{}').readLevel);
+
+    // search
+    const q = d.querySelector('#q');
+    q.value = 'butter';
+    q.dispatchEvent(new w.Event('input', { bubbles: true }));
+    await wait(600);
+    note('search.butter_cards', d.querySelectorAll('#cards .card').length);
+    q.value = '';
+    q.dispatchEvent(new w.Event('input', { bubbles: true }));
+    await wait(500);
+
+    // ---------- reader view
+    const id = cards[0].getAttribute('href').replace('#/s/', '');
+    w.location.hash = '#/s/' + id;
+    await until(() => d.querySelector('#reader-body .article'));
+    note('reader.story_id', id);
+    note('reader.level_tabs', d.querySelectorAll('.seg-tabs button').length);
+    note('reader.paragraphs', d.querySelectorAll('#reader-body .article p').length);
+    const sents = d.querySelectorAll('#reader-body .article .s');
+    note('reader.sentence_spans', sents.length);
+    note('reader.first_sentence', sents[0] ? sents[0].textContent.trim().slice(0, 70) : null);
+    note('reader.bold_words', d.querySelectorAll('#reader-body .article strong.w').length);
+    note('reader.word_list', d.querySelectorAll('#reader-body .words dt').length);
+    note('reader.image', !!d.querySelector('.hero'));
+
+    // switching level keeps the reader intact
+    const tabs = d.querySelectorAll('.seg-tabs button');
+    if (tabs.length > 1) {
+      const l2 = tabs[1];
+      l2.click();
+      await wait(900);
+      note('reader.after_level_switch', {
+        level: d.querySelector('.seg-tabs button[aria-pressed="true"]').textContent,
+        paragraphs: d.querySelectorAll('#reader-body .article p').length,
+        words: d.querySelectorAll('#reader-body .words dt').length,
+      });
+    }
+
+    // compare mode
+    const cmp = d.querySelector('[data-a="compare"]');
+    if (cmp) {
+      cmp.click();
+      await wait(400);
+      note('reader.compare_columns', d.querySelectorAll('#reader-body .cols .col').length);
+      cmp.click();
+      await wait(300);
+    }
+
+    // ---------- player
+    const pl = d.querySelector('#player');
+    note('player.visible', pl && !pl.hidden);
+    note('player.has_controls', !!pl.querySelector('[data-a="toggle"]'));
+    note('player.has_scrub', !!pl.querySelector('[data-a="scrub"]'));
+    note('player.has_rate', !!pl.querySelector('[data-a="rate"]'));
+    note('player.loop_buttons', ['clip', 'segloop', 'shadow', 'ab', 'seg', 'save']
+      .filter(a => pl.querySelector(`[data-a="${a}"]`)));
+    const audio = d.querySelector('#audio');
+    note('player.audio_src', (audio.getAttribute('src') || '').slice(0, 90));
+
+    // does the clip actually load and advance? (the podcast feed 302s to the CDN)
+    const meta = await new Promise((res) => {
+      if (audio.readyState >= 1) return res({ readyState: audio.readyState, duration: audio.duration });
+      const t = setTimeout(() => res({ timeout: true, readyState: audio.readyState,
+        error: audio.error && audio.error.code }), 30000);
+      audio.addEventListener('loadedmetadata', () => {
+        clearTimeout(t); res({ readyState: audio.readyState, duration: +audio.duration.toFixed(2) });
+      }, { once: true });
+      audio.addEventListener('error', () => {
+        clearTimeout(t); res({ error: audio.error && audio.error.code, readyState: audio.readyState });
+      }, { once: true });
+      audio.load();
+    });
+    note('player.audio_loaded', meta);
+    note('player.audio_duration_matches_index', meta.duration ? Math.round(meta.duration) : null);
+
+    if (meta.duration) {
+      const adv = await new Promise((res) => {
+        audio.currentTime = 1;
+        audio.play().then(() => {
+          const t0 = audio.currentTime;
+          setTimeout(() => res({ from: +t0.toFixed(2), to: +audio.currentTime.toFixed(2), paused: audio.paused }), 2500);
+        }).catch((e) => res({ play_rejected: String(e.message || e) }));
+      });
+      note('player.audio_advances', adv);
+      audio.pause();
+    }
+
+    // rate control actually changes playbackRate
+    const rate = pl.querySelector('[data-a="rate"]');
+    rate.value = '1.25';
+    rate.dispatchEvent(new w.Event('input', { bubbles: true }));
+    note('player.rate_applied', audio.playbackRate);
+
+    // A-B marker
+    pl.querySelector('[data-a="ab"]').click();
+    await wait(200);
+    note('player.ab_marker', !!pl.querySelector('[data-m="a"]'));
+    pl.querySelector('[data-a="abclear"]')?.click();
+
+    // whole-clip loop toggle (re-query: the player repaints its own DOM)
+    pl.querySelector('[data-a="clip"]').click();
+    await wait(200);
+    note('player.clip_loop_on', pl.querySelector('[data-a="clip"]').getAttribute('aria-pressed'));
+    pl.querySelector('[data-a="clip"]').click();
+    await wait(200);
+    note('player.clip_loop_off', pl.querySelector('[data-a="clip"]').getAttribute('aria-pressed'));
+
+    // sentence controls must be disabled without a Worker, and say why
+    note('player.sentence_btn_disabled_without_worker',
+      pl.querySelector('[data-a="segloop"]').disabled);
+    note('player.setup_hint', (pl.querySelector('.pnote') || {}).textContent?.trim().slice(0, 90));
+
+    // ---------- word sheet
+    const bold = d.querySelector('#reader-body .article strong.w');
+    if (bold) {
+      bold.click();
+      await until(() => d.querySelector('.sheet'));
+      note('sheet.word', d.querySelector('.sheet h3').textContent);
+      note('sheet.actions', [...d.querySelectorAll('.sheet .row button, .sheet .row a')].map(b => b.textContent.trim()));
+      d.querySelector('.sheet #close').click();
+      await wait(200);
+      note('sheet.closed', !d.querySelector('.sheet'));
+    }
+
+    // ---------- vocab + saved tabs
+    w.location.hash = '#/vocab';
+    await until(() => d.querySelector('#view .pad'));
+    note('vocab.view_ok', d.querySelector('#view .pad').textContent.includes('word'));
+    w.location.hash = '#/saved';
+    await wait(700);
+    note('saved.view_ok', (d.querySelector('#view .pad') || {}).textContent?.includes('Saved stories'));
+    w.location.hash = '#/';
+    await wait(500);
+    note('back_to_list_cards', d.querySelectorAll('#cards .card').length);
+
+    // ---------- manifest + service worker
+    note('manifest.link', !!d.querySelector('link[rel="manifest"]'));
+    note('sw.registered', !!(w.navigator.serviceWorker && w.navigator.serviceWorker.controller !== undefined));
+  } catch (e) {
+    R.fatal = String(e && e.stack || e);
+  }
+  R.errors = [...new Set(R.errors)].slice(0, 20);
+  R.finished = true;
+  send();
+})();
+setTimeout(() => { R.finished = true; R.timeout = true; send(); }, 90000);
+</script></body></html>

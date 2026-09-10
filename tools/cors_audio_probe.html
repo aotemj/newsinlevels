@@ -1,0 +1,61 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><pre id="out">running…</pre>
+<script>
+/**
+ * Does <audio crossOrigin="anonymous"> load the podcast URL?
+ *
+ * Phones the element hard: every media event, networkState, readyState and any
+ * error code, plus a plain fetch() alongside so a network-level failure can be
+ * told apart from a media-level one.
+ */
+const MP3 = "https://feeds.soundcloud.com/stream/2396250186-newsinlevels-x.mp3";
+const R = { tests: {}, finished: false };
+const send = () => { document.getElementById('out').textContent = JSON.stringify(R, null, 1);
+  fetch('/report', { method: 'POST', body: JSON.stringify(R) }); };
+const done = (k, v) => { R.tests[k] = v; send(); };
+const NS = { 0: "EMPTY", 1: "IDLE", 2: "LOADING", 3: "NO_SOURCE" };
+const RS = { 0: "NOTHING", 1: "METADATA", 2: "CURRENT", 3: "FUTURE", 4: "ENOUGH" };
+
+function tryLoad(crossOrigin, ms = 15000) {
+  return new Promise((res) => {
+    const a = document.createElement("audio");
+    if (crossOrigin) a.crossOrigin = crossOrigin;
+    a.preload = "auto";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    const ev = [];
+    ["loadstart", "progress", "suspend", "stalled", "waiting", "canplay",
+     "loadedmetadata", "loadeddata", "error", "abort", "emptied"]
+      .forEach((n) => a.addEventListener(n, () => ev.push(n)));
+    const out = { crossOrigin: crossOrigin || null, events: ev };
+    const snap = () => { out.networkState = `${a.networkState} (${NS[a.networkState]})`;
+      out.readyState = `${a.readyState} (${RS[a.readyState]})`;
+      out.error = a.error ? `code ${a.error.code}: ${a.error.message}` : null;
+      out.currentSrc = (a.currentSrc || "").slice(0, 60); };
+    const t = setTimeout(() => { out.timeout = true; snap(); out.events = [...ev]; res(out); }, ms);
+    a.addEventListener("loadedmetadata", () => { clearTimeout(t); snap(); out.duration = +a.duration; res(out); }, { once: true });
+    a.addEventListener("error", () => { clearTimeout(t); snap(); out.events = [...ev]; res(out); }, { once: true });
+    a.src = MP3;
+    a.load();
+  });
+}
+
+(async () => {
+  // 1. is the URL reachable at all from this document?
+  try {
+    const r = await fetch(MP3, { mode: "no-cors", cache: "no-store" });
+    done("plain_fetch_nocors", { ok: true, type: r.type, status: r.status });
+  } catch (e) { done("plain_fetch_nocors", { ok: false, err: String(e) }); }
+
+  // 2. media element, three CORS modes
+  done("default", await tryLoad(null));
+  done("anonymous", await tryLoad("anonymous"));
+  done("use-credentials", await tryLoad("use-credentials"));
+
+  // 3. media element pointing straight at the signed CDN file (no redirect hop)
+  const cdn = R.tests.anonymous && R.tests.anonymous.currentSrc;
+  if (cdn) done("direct_cdn", await tryLoad(null, 15000));
+
+  R.finished = true; send();
+})();
+setTimeout(() => { R.finished = true; send(); }, 110000);
+</script></body></html>

@@ -1,0 +1,23 @@
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# sync scratch (the raw cache IS committed on purpose so daily runs are
+# incremental -- see build/raw and build/state.json)
+build/*.log
+build/failed.txt
+build/*.tmp
+
+# node
+node_modules/
+
+# ide
+.idea/
+
+# wrangler's local cache: holds the account id and account name (an email), not a
+# credential, but there is no reason to publish either
+**/.wrangler/
+
+# os
+.DS_Store
