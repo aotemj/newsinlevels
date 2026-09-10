@@ -1,0 +1,60 @@
+name: sync
+
+# Keeps the newest 150 stories in docs/data/ up to date. Runs daily and can be
+# triggered by hand from the Actions tab.
+on:
+  schedule:
+    - cron: "17 5 * * *"        # 05:17 UTC = 13:17 Asia/Shanghai
+  workflow_dispatch:
+    inputs:
+      window:
+        description: how many recent stories to keep
+        default: "150"
+
+# only one sync at a time; a second one would fight over the same commit
+concurrency:
+  group: sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync the rolling window
+        run: python scraper/sync.py --window ${{ github.event.inputs.window || 150 }}
+
+      - name: Commit
+        run: |
+          git config user.name  "nil-sync"
+          git config user.email "nil-sync@users.noreply.github.com"
+          git add -A docs build
+          if git diff --cached --quiet; then
+            echo "nothing changed"
+          else
+            n=$(python -c "import json;print(json.load(open('docs/data/index.json'))['count'])")
+            git commit -m "sync: $(date -u +%Y-%m-%d) · $n stories"
+            git push
+          fi
+
+      # Pages serves from the repo; nothing to build, but this makes the deploy
+      # explicit and surfaces failures in the Actions UI.
+      - name: Report
+        run: |
+          python - <<'PY'
+          import json
+          i = json.load(open("docs/data/index.json"))
+          s = i["stories"]
+          print(f"stories : {i['count']}")
+          print(f"window  : {s[-1]['date']} .. {s[0]['date']}")
+          print(f"newest  : {s[0]['title']}")
+          print(f"baked at: {i['generated']}")
+          PY

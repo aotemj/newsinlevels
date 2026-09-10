@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5">
+<title>News in Levels — reader</title>
+<meta name="description" content="Read and listen to News in Levels at three levels, with per-sentence audio looping.">
+<meta name="theme-color" content="#0f766e">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="NiL Reader">
+<link rel="stylesheet" href="app.css">
+<script>
+// Capture boot failures where they can still be read (device console, or the
+// headless smoke tests) instead of losing them to the void.
+window.__errs = [];
+addEventListener("error", (e) => window.__errs.push("error: " + (e.message || e)));
+addEventListener("unhandledrejection", (e) => window.__errs.push("rejection: " + ((e.reason && e.reason.message) || e.reason)));
+</script>
+</head>
+<body>
+
+<header id="topbar" class="topbar">
+  <button id="back" class="icon-btn" hidden aria-label="Back">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+  </button>
+  <h1 id="topbar-title">News in Levels</h1>
+  <button id="setup" class="icon-btn" aria-label="Settings">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.6 1.6 0 00-1.8-.3 1.6 1.6 0 00-1 1.5V21a2 2 0 11-4 0v-.1A1.6 1.6 0 008 19.4a1.6 1.6 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.6 1.6 0 00.3-1.8 1.6 1.6 0 00-1.5-1H2a2 2 0 110-4h.1A1.6 1.6 0 004.6 8a1.6 1.6 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.6 1.6 0 001.8.3H9a1.6 1.6 0 001-1.5V2a2 2 0 114 0v.1a1.6 1.6 0 001 1.5 1.6 1.6 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.6 1.6 0 00-.3 1.8V9a1.6 1.6 0 001.5 1H22a2 2 0 110 4h-.1a1.6 1.6 0 00-1.5 1z"/></svg>
+  </button>
+  <button id="theme" class="icon-btn" aria-label="Theme">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2M5.6 5.6l1.4 1.4m10 10l1.4 1.4M3 12h2m14 0h2M5.6 18.4l1.4-1.4m10-10l1.4-1.4"/><circle cx="12" cy="12" r="4"/></svg>
+  </button>
+</header>
+
+<main id="view" class="view" tabindex="-1"></main>
+
+<!-- one audio element for the whole app: it survives navigation so playback
+     keeps going while the user reads other screens (Android background audio) -->
+<audio id="audio" preload="metadata" playsinline></audio>
+
+<section id="player" class="player" hidden></section>
+
+<nav id="tabs" class="tabs">
+  <a href="#/" data-tab="read">Read</a>
+  <a href="#/vocab" data-tab="vocab">Words</a>
+  <a href="#/saved" data-tab="saved">Saved</a>
+</nav>
+
+<div id="toast" class="toast" hidden></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
