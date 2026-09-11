@@ -21,10 +21,11 @@ REPORT = "/tmp/probe_report.json"
 W = "https://nil-audio.automj-nil.workers.dev"
 
 SUITE = [
-    # name,        harness,                  query,                  wait, port
-    ("pin",   "tools/player_pin_probe.html", f"worker={W}",          160, 8871),
-    ("app",   "tools/app_smoke.html",        "worker=off",           190, 8872),
-    ("full",  "tools/worker_path_smoke.html", f"worker={W}",         230, 8873),
+    # name,      harness,                          query,                    wait, port
+    ("fallback", "tools/resolver_fallback_probe.html", "",                 60,  8870),
+    ("pin",      "tools/player_pin_probe.html",        f"worker={W}",       160, 8871),
+    ("app",      "tools/app_smoke.html",               "worker=off",        190, 8872),
+    ("full",     "tools/worker_path_smoke.html",       f"worker={W}",       230, 8873),
 ]
 
 

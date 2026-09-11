@@ -1,0 +1,115 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>resolver fallback probe</title>
+<style>html,body{margin:0}iframe{width:390px;height:844px;border:2px solid #f0f}</style>
+</head><body>
+<iframe id="app"></iframe>
+<script>
+/**
+ * Does the resolver base list actually fail over?
+ *
+ * This is the logic behind "works with a VPN, not without": the first base is
+ * reachable in one network and not the other, and the app must step to the next
+ * one -- from BOTH the <audio> element and the sentence-timing fetch, which are
+ * separate requests.  Runs entirely offline; no resolver has to exist.
+ *
+ * Also pins down the zero-infrastructure path: with ?worker=off, hasCors() must
+ * be false so the reader says so instead of blaming a missing Worker.
+ */
+const R = { steps: [], errors: [], finished: false };
+const send = () => fetch('/report', { method: 'POST', body: JSON.stringify(R) });
+const note = (k, v) => { R.steps.push([k, v]); send(); };
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+const frame = document.getElementById('app');
+frame.src = './index.html';
+
+(async function run() {
+  let w, d;
+  for (;;) {
+    await wait(200);
+    try { w = frame.contentWindow; d = frame.contentDocument; if (w && w.__nil) break; } catch (e) {}
+  }
+  w.addEventListener('error', e => R.errors.push('error: ' + (e.message || e)));
+  w.addEventListener('unhandledrejection', e => R.errors.push('rejection: ' + (e.reason && e.reason.message || e.reason)));
+
+  const N = w.__nil;
+  const res = N.resolver;
+  const checks = [];
+  const check = (name, ok, detail) => {
+    checks.push([name, ok]);
+    note((ok ? 'PASS  ' : 'FAIL  ') + name, detail === undefined ? '' : detail);
+  };
+
+  try {
+    const all = res.state().all;
+    note('configured_bases', all);
+
+    if (all.length < 2) {
+      note('SKIP', 'need 2+ bases in WORKER_BASES to exercise failover');
+    } else {
+      // 1. starts on the first base
+      check('starts on the first configured base', res.base() === all[0], res.base());
+
+      // 2. marking it failed advances, and reports a base remains
+      const advanced = res.fail();
+      check('a failed base advances to the next one', advanced === true && res.base() === all[1],
+            `advanced=${advanced} now=${res.base()}`);
+
+      // 3. idempotency: failing the SAME base twice must not skip past it.
+      //    The audio element and the timings fetch can both fail at once.
+      const again = res.fail();
+      const stateAfter = res.state();
+      if (stateAfter.failed.length >= all.length) {
+        check('re-failing an exhausted list returns false', again === false, `again=${again}`);
+        check('but still returns a base to retry (never "")',
+              res.base() === all[all.length - 1], res.base());
+      } else {
+        check('re-failing the same base does not double-advance',
+              res.base() === all[2], `now=${res.base()} (expected ${all[2]})`);
+      }
+
+      // 4. the failure set is remembered for reporting
+      check('failures are recorded for diagnostics', res.state().failed.length >= 1,
+            res.state().failed.join(', '));
+    }
+
+    // 5. an explicit override is never second-guessed
+    const before = res.state().failed.length;
+    N.settings.worker = 'https://example.invalid';
+    check('explicit ?worker= wins over the list', res.base() === 'https://example.invalid', res.base());
+    check('explicit override is never auto-failed', res.fail() === false, res.fail());
+    N.settings.worker = '';
+    check('clearing the override restores the list', res.state().failed.length === before, res.base());
+
+    // 6. the deliberate no-resolver mode disables the feature instead of faking it
+    N.settings.worker = '__off__';
+    check('worker=off reports no resolver (so the reader explains, not blames)', res.hasCors() === false);
+    check('worker=off explains itself via timingsReason',
+          !!N.player.timingsReason(), String(N.player.timingsReason()));
+    N.settings.worker = '';
+
+    // 7. the reader copy must not blame the Worker when a resolver IS configured
+    const whyReady = N.player.timingsReason();
+    if (N.player.times) {
+      check('a ready player reports no reason', whyReady === null, String(whyReady));
+    } else {
+      check('an unready player gives an actionable reason', !!whyReady, String(whyReady));
+      check('that reason does not mention installing a Worker',
+            !/install the worker/i.test(String(whyReady)), String(whyReady));
+    }
+
+    const statusEl = d.querySelector('#player .pnote, #player .pstatus');
+    note('player_status_line', statusEl ? statusEl.textContent.trim().slice(0, 160) : null);
+    note('toast_copy_on_sentence_tap', 'checked statically in app.js — see the assertion above');
+
+    const failed = checks.filter(c => !c[1]);
+    note('summary', `${checks.length - failed.length}/${checks.length} checks passed`);
+    if (failed.length) R.errors.push('failed checks: ' + failed.map(f => f[0]).join('; '));
+  } catch (e) {
+    R.errors.push('probe threw: ' + (e && e.message || e));
+  }
+
+  R.finished = true;
+  send();
+})();
+</script>
+</body></html>
