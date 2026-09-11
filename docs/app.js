@@ -549,11 +549,13 @@ function openSetup() {
   back.addEventListener("click", close);
 
   sheet.innerHTML = `
-    <h3>Audio Worker</h3>
-    <p class="def">Paste the URL that <code>wrangler deploy</code> printed for the Worker in
-      <code>worker/</code>. It resolves each clip to a playable mp3 and adds the CORS header that
-      sentence timings need. Leave it empty to keep playing through the public podcast feed.</p>
-    <input id="wu" value="${esc(cur)}" placeholder="https://nil-audio.you.workers.dev"
+    <h3>Audio resolver</h3>
+    <p class="def">Paste the URL printed by <code>npx wrangler pages deploy</code> (or
+      <code>wrangler deploy</code>). It resolves each clip to a playable mp3 and adds the
+      CORS header that sentence timings need.
+      <b>In mainland China use the <code>pages.dev</code> one</b> — <code>workers.dev</code> is
+      DNS-poisoned there. Leave it empty to keep playing through the public podcast feed.</p>
+    <input id="wu" value="${esc(cur)}" placeholder="https://nil-audio.pages.dev"
            style="width:100%;padding:11px;border-radius:10px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:14px">
     <div class="pstatus" id="wstat"></div>
     <div class="row" style="margin-top:12px">

@@ -1,0 +1,30 @@
+name = "nil-audio"
+pages_build_output_dir = "docs"
+compatibility_date = "2024-11-01"
+
+# Cloudflare **Pages** deployment of the same resolver that lives in worker/.
+#
+# Why Pages and not just the Worker:
+#   In mainland China `workers.dev` is DNS-poisoned (it resolves to Twitter's
+#   address space and every request times out), while `pages.dev` resolves
+#   normally.  Pages Functions run on the exact same Worker runtime, so this is
+#   the same code on a hostname that is actually reachable there -- and it costs
+#   nothing and needs no domain.
+#
+# Deploy (from the repository root):
+#   npx wrangler login          (one time, opens a browser)
+#   npx wrangler pages deploy   (reads this file; prints the pages.dev URL)
+#
+# The app is served as static assets from docs/ at
+#   https://nil-audio.pages.dev/
+# and the resolver is mounted from functions/ at
+#   https://nil-audio.pages.dev/audio/<trackId>
+#   https://nil-audio.pages.dev/stream/<trackId>
+#   https://nil-audio.pages.dev/health
+#
+# This coexists with the Workers deploy in worker/wrangler.toml -- run that one
+# from worker/ if you are outside mainland China and want the workers.dev URL.
+# Both share worker/index.js, so there is only ever one implementation.
+
+[observability]
+enabled = true
