@@ -1,6 +1,6 @@
 /** Reader: everything in one place. */
 import { settings, favorites, progress, vocab, audioCache, segCache } from "./store.js";
-import { player, hasCors, workerBase, OFF } from "./player.js";
+import { player, hasCors, workerBase, markBaseFailed, resolverState, OFF } from "./player.js";
 import { WORKER_BASE } from "./config.js";
 
 /* ------------------------------------------------------------------ helpers */
@@ -380,8 +380,12 @@ function paintBody() {
   // clicking a sentence jumps the audio there and loops it
   body.querySelectorAll(".article .s").forEach((sp) => sp.addEventListener("click", () => {
     const i = Number(sp.dataset.i);
+    // Ask first: goto() may change the state we are reporting on.  The old copy
+    // said "install the Worker" for every failure, which was wrong whenever a
+    // resolver was configured and something else had gone wrong.
+    const why = player.timingsReason();
     player.goto(i, { loop: true });
-    toast(player.times ? `Sentence ${i + 1} · looping` : "Sentence timings not ready — install the Worker");
+    toast(why ? `Can't loop this sentence — ${why}` : `Sentence ${i + 1} · looping`);
   }));
   // bold words inside the text open the definition sheet
   body.querySelectorAll(".article strong").forEach((st) => {
@@ -581,12 +585,56 @@ function openSetup() {
   sheet.querySelector("#wtest").addEventListener("click", async () => {
     const u = sheet.querySelector("#wu").value.trim().replace(/\/+$/, "");
     if (!u) return stat("Enter a URL first.");
+    const out = sheet.querySelector("#wstat");
+    out.style.whiteSpace = "pre-line";     // the report is multi-line
+    const track = player.track || "2396246388";
+    const log = [];
+    const t0 = Date.now();
+    // The connection just hangs on a blocked network, so every hop needs its own
+    // deadline -- otherwise "Test" spins forever and tells the user nothing.
+    const deadlined = (p, ms, what) => Promise.race([
+      p,
+      new Promise((_, rej) => setTimeout(() => rej(new Error(`${what} timed out after ${ms / 1000}s`)), ms)),
+    ]);
+
     stat("Testing…");
     try {
-      const h = await fetch(u + "/health");
+      const h = await deadlined(fetch(u + "/health", { cache: "no-store" }), 10000, "/health");
       const j = await h.json();
-      stat(j.ok ? `OK — ${j.service} (client id: ${j.clientIdSource})` : "Unexpected reply.");
-    } catch (e) { stat("Failed: " + (e.message || e)); }
+      log.push(`1. resolver reachable — ${Date.now() - t0}ms, client id: ${j.clientIdSource}`);
+    } catch (e) {
+      log.push(`1. resolver UNREACHABLE — ${e.message}`);
+      log.push("");
+      log.push("This is the broken hop: the device cannot reach this URL at all.");
+      log.push("A *.workers.dev address is DNS-poisoned in mainland China; use *.pages.dev.");
+      return stat(log.join("\n"));
+    }
+
+    try {
+      const r = await deadlined(fetch(`${u}/audio/${track}?probe=1`, { cache: "no-store" }), 25000,
+                                 "test resolve");
+      const j = await r.json();
+      log.push(`2. resolver can resolve a track — CDN host: ${j.host}`);
+      try {
+        // mode:"no-cors" keeps this a reachability probe: it rejects on a network
+        // failure and resolves (opaque) on success, without downloading the clip.
+        await deadlined(fetch(j.url, { mode: "no-cors", method: "HEAD" }), 12000, "CDN check");
+        log.push("3. audio CDN reachable — playback will work");
+      } catch (e) {
+        log.push(`3. audio CDN NOT reachable — ${e.message}`);
+        log.push("   playback and sentence timings will both fail from this network");
+      }
+    } catch (e) {
+      log.push(`2. resolve FAILED — ${e.message}`);
+      log.push("   the resolver is up but cannot reach SoundCloud itself");
+    }
+
+    const why = player.timingsReason();
+    log.push(`4. timings: ${why || "ready"}`);
+    const rs = resolverState();
+    if (rs.failed.length) log.push(`   bases already tried and failed: ${rs.failed.join(", ")}`);
+    if (rs.all.length > 1) log.push(`   configured bases: ${rs.all.join(", ")}`);
+    stat(log.join("\n"));
   });
   sheet.querySelector("#wauto").addEventListener("click", (e) => {
     settings.autoSeg = !settings.autoSeg;
@@ -653,7 +701,10 @@ try {
 // Debug handle: the app is meant to be poked at from a device console and from
 // the headless smoke tests, so the internals are exposed on purpose.
 window.__nil = { player, settings, favorites, progress, vocab, audioCache, segCache,
-  route: () => route, current: () => current, index: () => INDEX };
+  route: () => route, current: () => current, index: () => INDEX,
+  // Reachable from the device console: __nil.resolver.state() answers "which
+  // resolver am I on, and what has already failed" on a phone with no devtools.
+  resolver: { base: workerBase, state: resolverState, fail: markBaseFailed, hasCors } };
 
 loadIndex().then(() => {
   if (!settings.worker && !WORKER_BASE) {

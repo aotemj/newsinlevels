@@ -22,28 +22,52 @@ const fmt = (t) => {
   return `${m}:${String(s).padStart(2, "0")}`;
 };
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+/** Error messages end up in the status line, so escape before interpolating. */
+const esc = (s) => String(s).replace(/[&<>"]/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-// Which entry of WORKER_BASES we are currently on.  Advanced by _fail() when a
-// base turns out to be unreachable (e.g. workers.dev behind the GFW), so a
-// blocked base costs one failed request instead of a dead player.
-let baseIdx = 0;
+/* ---------------------------------------------------------------- resolver */
+
+const stripSlash = (u) => String(u || "").replace(/\/+$/, "");
+
+// Resolver bases that have already failed us, shared by the <audio> element AND
+// the sentence-timing fetch.  Originally only the audio path advanced, so a dead
+// first base still played (after a retry) while the timings stayed permanently
+// missing -- and the toast then blamed the Worker, which was installed and fine.
+const failedBases = new Set();
 
 export const workerBase = () => {
   const s = settings.worker || "";
   if (s === OFF) return "";                 // "run without a resolver" on purpose
-  if (s) return s.replace(/\/+$/, "");
-  const list = WORKER_BASES.filter(Boolean);
-  return (list[baseIdx] || "").replace(/\/+$/, "");
+  if (s) return stripSlash(s);
+  const list = WORKER_BASES.filter(Boolean).map(stripSlash);
+  const usable = list.find((b) => !failedBases.has(b));
+  // When every base has failed, keep returning the last one: retrying a known-bad
+  // host is better than disabling playback, and markBaseFailed() still reports
+  // "nothing left" so no caller can loop on it.
+  return usable || list[list.length - 1] || "";
 };
 
-/** Move to the next configured base.  False when there is nothing left to try. */
-export const nextWorkerBase = () => {
-  if (settings.worker) return false;        // an explicit choice is not overridden
-  const list = WORKER_BASES.filter(Boolean);
-  if (baseIdx + 1 >= list.length) return false;
-  baseIdx += 1;
-  return true;
+/**
+ * Record that the current base failed, so the next workerBase() call moves on.
+ * Returns true only when an untried base remains -- so callers can use it as a
+ * one-shot retry guard.  Idempotent per base, which matters because the audio
+ * element and the timings fetch can both fail on the same base at once.
+ */
+export const markBaseFailed = () => {
+  if (settings.worker) return false;        // an explicit choice is not second-guessed
+  const cur = workerBase();
+  if (!cur) return false;
+  failedBases.add(cur);
+  return WORKER_BASES.filter(Boolean).map(stripSlash).some((b) => !failedBases.has(b));
 };
+
+/** For diagnostics: what has been tried. */
+export const resolverState = () => ({
+  current: workerBase(),
+  failed: [...failedBases],
+  all: WORKER_BASES.filter(Boolean).map(stripSlash),
+});
 
 export const hasCors = () => !!workerBase();
 
@@ -115,10 +139,8 @@ class Player extends EventTarget {
   _fail() {
     // An unreachable resolver host fails right here -- in mainland China
     // workers.dev is DNS-poisoned while pages.dev is not.  Step to the next
-    // configured base and retry before reporting anything to the user; the retry
-    // count is bounded because nextWorkerBase() only returns true while there are
-    // bases left to try.
-    if (!this.blobUrl && this.track && nextWorkerBase()) {
+    // configured base and retry before reporting anything to the user.
+    if (!this.blobUrl && this.track && markBaseFailed()) {
       this.audio.src = audioUrlFor(this.track, this.secret);
       this.audio.load();
       this._repaint();
@@ -145,6 +167,7 @@ class Player extends EventTarget {
     if (same) { if (autoplay) this.play(); this._repaint(); return; }
 
     this.times = null; this.confidence = 0; this.active = -1;
+    this.segError = null;
     this.loopIndex = -1; this.shadowIndex = -1;
     this.ab = null; this.shadowReps = 0;
     this._revoke();
@@ -166,27 +189,60 @@ class Player extends EventTarget {
     if (this.sentences.length && hasCors()) {
       const cached = await segCache.get(track).catch(() => null);
       if (cached) { this._applySegments(cached, true); }
+      // segmentNow() records the reason on failure and repaints, so swallowing the
+      // rejection here is safe -- the reader shows why, instead of leaving a
+      // misleading "install the Worker" hint.
       else if (settings.autoSeg) { this.segmentNow().catch(() => {}); }
     }
   }
 
   async segmentNow(force = false) {
-    if (!hasCors()) throw new Error("sentence timings need the Worker (see setup)");
+    if (!hasCors()) throw new Error("no audio resolver is configured (setup → resolver URL)");
     if (!this.sentences || !this.sentences.length) throw new Error("no text to align");
     if (this.times && !force) return this.times;
     this.busy = "analysing audio";
+    this.segError = null;
     this._repaint();
     try {
-      const res = await segmentUrl(audioUrlFor(this.track, this.secret), this.sentences,
-        (m) => { this.busy = m; this._repaint(); });
-      if (!res.times) throw new Error(res.reason || "could not align audio to text");
-      await segCache.put(this.track, res).catch(() => {});
-      this._applySegments(res, false);
-      return res;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const res = await segmentUrl(audioUrlFor(this.track, this.secret), this.sentences,
+            (m) => { this.busy = m; this._repaint(); });
+          if (!res.times) throw new Error(res.reason || "could not align audio to text");
+          await segCache.put(this.track, res).catch(() => {});
+          this._applySegments(res, false);
+          return res;
+        } catch (e) {
+          // This fetch is its own request, so a base the client cannot reach fails
+          // here independently of the <audio> element.  Retry once on the next base
+          // instead of leaving the timings permanently missing.
+          if (attempt === 0 && markBaseFailed()) continue;
+          throw e;
+        }
+      }
+    } catch (e) {
+      this.segError = e && e.message ? e.message : String(e);
+      throw e;
     } finally {
       this.busy = null;
       this._repaint();
     }
+  }
+
+  /**
+   * Why there are no sentence timings, phrased so the user can act on it.
+   * Returns null when the timings are in fact available.  The reader used to say
+   * "install the Worker" for every one of these cases, which was wrong whenever a
+   * resolver WAS configured and the real cause was elsewhere.
+   */
+  timingsReason() {
+    if (this.times) return null;
+    if (!hasCors()) return "no audio resolver is set up — open setup and paste its URL";
+    if (this.busy) return `still analysing the audio (${this.busy}) — try again in a moment`;
+    if (this.segError) return `timing analysis failed: ${this.segError}`;
+    if (!settings.autoSeg) return "automatic timings are off — press ⟳ in the player";
+    if (!this.sentences || !this.sentences.length) return "this level has no text to align";
+    return "not computed yet — press ⟳ in the player";
   }
 
   _applySegments(res, cached) {
@@ -443,18 +499,20 @@ class Player extends EventTarget {
   }
 
   _statusLine() {
+    if (this._hasSeg()) {
+      const c = this.confidence;
+      const label = c >= 0.7 ? "good" : c >= 0.4 ? "approximate" : "rough — check the boundaries";
+      const det = this.segInfo ? ` (${this.segInfo.spans} pauses / ${this.segInfo.sentences} sentences)` : "";
+      return `<div class="pnote">Sentence timings: ${label}${det}${this.segInfo && this.segInfo.cached ? " · cached" : ""}</div>`;
+    }
+    // Say what is actually wrong.  Blaming the missing Worker when a resolver IS
+    // configured sent the reader looking in the wrong place.
     if (!hasCors()) {
-      return `<div class="pnote">Playing from the public podcast feed. Install the Worker
-        (setup → Worker URL) to unlock sentence looping and tap-to-seek.</div>`;
+      return `<div class="pnote">Playing from the public podcast feed. Install the resolver
+        (setup → resolver URL) to unlock sentence looping and tap-to-seek.</div>`;
     }
-    if (!this._hasSeg()) {
-      return this.sentences && this.sentences.length
-        ? `<div class="pnote">Sentence timings not computed yet — press ⟳.</div>` : "";
-    }
-    const c = this.confidence;
-    const label = c >= 0.7 ? "good" : c >= 0.4 ? "approximate" : "rough — check the boundaries";
-    const det = this.segInfo ? ` (${this.segInfo.spans} pauses / ${this.segInfo.sentences} sentences)` : "";
-    return `<div class="pnote">Sentence timings: ${label}${det}${this.segInfo && this.segInfo.cached ? " · cached" : ""}</div>`;
+    const why = this.timingsReason();
+    return why ? `<div class="pnote">Sentence timings: ${esc(why)}</div>` : "";
   }
 
   _bind() {

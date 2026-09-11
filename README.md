@@ -249,7 +249,12 @@ nothing is mocked.
 ```bash
 # everything at once (this is the one to run after a change)
 python tools/run_suite.py
-python tools/run_suite.py pin full         # a subset by name
+python tools/run_suite.py fallback pin       # a subset by name
+#   fallback — resolver base failover (offline; proves the app steps to the next
+#              base from both the <audio> element AND the timings fetch)
+#   pin      — the bottom bar stays pinned across six scroll/nav states
+#   app      — the degraded path (asserts sentence controls are DISABLED + say why)
+#   full     — the resolver path end to end (needs network access)
 
 # or drive one harness directly
 python tools/browser_probe.py tools/player_pin_probe.html --root docs --wait 160 \
