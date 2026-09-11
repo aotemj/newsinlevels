@@ -1,18 +1,25 @@
 /**
  * News in Levels — audio resolver (Cloudflare Worker)
  *
- *   GET /audio/<trackId>?s=<secret_token>   -> 302 to a fresh signed CDN mp3
- *   GET /health                             -> { ok, clientIdSource }
+ *   GET /audio/<trackId>?s=<secret>    -> 302 to a fresh signed CDN mp3 (cheap)
+ *   GET /stream/<trackId>?s=<secret>   -> the mp3 bytes themselves, proxied
+ *   GET /audio/<trackId>?probe=1       -> { url, host } instead of the redirect
+ *   GET /health                        -> { ok, clientIdSource }
  *
  * Why this exists
  *   The site embeds SoundCloud players. Their podcast RSS exposes a permanent
  *   mp3 URL for public tracks, but (a) it lags behind new uploads, (b) it omits
  *   private tracks, and (c) its first redirect hop carries no CORS header, so a
  *   browser cannot read the bytes (needed to decode audio and find sentence
- *   boundaries).  Resolving through api-v2 here fixes all three: the Worker
- *   answers with `Access-Control-Allow-Origin: *` and hands the player a 302 to
- *   the CDN, so byte delivery, HTTP Range seeking and Web Audio decoding all work
- *   without us ever storing or re-hosting any audio.
+ *   boundaries).  Resolving through api-v2 fixes all three.
+ *
+ * Why /stream exists as well as /audio
+ *   A 302 makes the *browser* fetch the bytes from cf-media.sndcdn.com, and the
+ *   whole SoundCloud family (soundcloud.com, api-v2.soundcloud.com,
+ *   feeds.soundcloud.com) is blocked in mainland China, as is the workers.dev
+ *   domain itself.  /stream pulls the bytes on Cloudflare's side and hands them
+ *   to the browser from a single origin, so nothing on the client has to reach
+ *   SoundCloud.  Range requests are forwarded, so seeking still works.
  */
 
 const DEFAULT_CLIENT_ID = 'Pb72ranhoyt6gw7hM7TkzUItXlMWSNSo';
@@ -21,7 +28,8 @@ const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,HEAD,OPTIONS',
   'Access-Control-Allow-Headers': '*',
-  'Access-Control-Expose-Headers': 'Content-Length,Content-Range,Accept-Ranges',
+  'Access-Control-Expose-Headers':
+    'Content-Length,Content-Range,Accept-Ranges,Content-Type',
   'Access-Control-Max-Age': '86400',
 };
 
@@ -107,14 +115,16 @@ export default {
         service: 'news-in-levels audio resolver',
         clientIdSource,
         clientId: cachedClientId ? `${cachedClientId.slice(0, 6)}…` : null,
-        routes: ['/audio/<trackId>?s=<secret_token>', '/health'],
+        routes: ['/audio/<trackId>?s=<secret_token>', '/audio/<trackId>?probe=1',
+                 '/stream/<trackId>?s=<secret_token>', '/health'],
       });
     }
 
-    const m = pathname.match(/^\/audio\/(\d{3,})$/);
+    const m = pathname.match(/^\/(audio|stream)\/(\d{3,})$/);
     if (!m) return json({ error: 'not found', pathname }, 404);
 
-    const trackId = m[1];
+    const mode = m[1];
+    const trackId = m[2];
     const secret = searchParams.get('s') || null;
 
     let lastErr = null;
@@ -126,6 +136,44 @@ export default {
           try { cid = await clientId(false); } catch { /* keep default */ }
         }
         const { url, title, duration } = await resolveTrack(trackId, secret, cid);
+
+        // ?probe=1 hands the caller the resolved URL instead of the audio, so a
+        // client-side diagnostic can test whether *it* can reach the CDN host.
+        if (searchParams.get('probe')) {
+          return json({
+            ok: true, trackId, host: new URL(url).host, url,
+            title: title || null, durationMs: duration || null, mode,
+          });
+        }
+
+        if (mode === 'stream') {
+          // Forward Range so seeking works, and stream the body straight through
+          // rather than buffering it (clips are small, but this keeps memory flat
+          // and starts playback immediately).
+          const range = request.headers.get('Range');
+          const upstream = await fetch(url, {
+            headers: range ? { Range: range } : {},
+            redirect: 'follow',
+          });
+          if (!upstream.ok && upstream.status !== 206) {
+            throw new Error(`upstream ${upstream.status}`);
+          }
+          const h = new Headers(CORS);
+          h.set('Content-Type', upstream.headers.get('Content-Type') || 'audio/mpeg');
+          h.set('Accept-Ranges', 'bytes');
+          h.set('Cache-Control', 'no-store');
+          for (const k of ['Content-Length', 'Content-Range']) {
+            const v = upstream.headers.get(k);
+            if (v) h.set(k, v);
+          }
+          h.set('X-Track-Title', encodeURIComponent(title || ''));
+          h.set('X-Track-Duration-Ms', String(duration || ''));
+          return new Response(request.method === 'HEAD' ? null : upstream.body, {
+            status: upstream.status === 206 ? 206 : 200,
+            headers: h,
+          });
+        }
+
         return new Response(null, {
           status: 302,
           headers: {

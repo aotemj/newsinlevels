@@ -67,9 +67,47 @@ Then **Settings → Pages → Source: Deploy from a branch → `main` / `/docs`*
 The daily workflow in `.github/workflows/sync.yml` refreshes the story window
 each morning (~1 min once the committed raw cache is warm) and commits the result.
 
-### 2. The audio Worker (Cloudflare, free)
+### 2. The audio resolver (Cloudflare, free)
 
-Why this exists: the site embeds SoundCloud players. Their public podcast feed
+**给中国大陆用户：用 Pages 部署，不要用 Workers。** 实测（大陆家宽，无代理）：
+
+| 主机 | 结果 |
+|---|---|
+| `aotemj.github.io` | ✅ HTTP 200 |
+| `nil-audio.<sub>.workers.dev` | ❌ 超时 —— DNS 被污染，解析到 `192.133.77.59`（Twitter 地址段） |
+| `*.pages.dev` | ✅ 可达（`cloudflare-pages.pages.dev` → 真实 Cloudflare IP + HTTP 522） |
+| `api-v2.soundcloud.com` | ❌ 超时 —— 污染为 Dropbox / Facebook 地址 |
+| `feeds.soundcloud.com` | ❌ 超时 |
+| `cf-media.sndcdn.com` | ✅ **HTTP 403**（TLS 握手完成、服务器正常应答，只是路径无效） |
+
+被墙的是 **Worker 自己的域名** 和 **SoundCloud 的 API/feed**；**音频字节所在的 CDN 是通的**。
+也就是说 302 跳转的字节投递本来没问题，卡住的是"解析"这一步。
+`pages.dev` 和 `workers.dev` 同为 Cloudflare，但只有前者没被污染，而 Pages Functions
+跑的就是同一套 Worker 运行时 —— 所以搬到 Pages 即可，零成本、不用买域名。
+
+```bash
+npx wrangler login          # 一次性
+npx wrangler pages deploy   # 在仓库根目录运行（读根目录的 wrangler.toml）
+```
+
+部署到 `https://nil-audio.pages.dev`：静态资源来自 `docs/`，解析器由 `functions/` 挂载在
+`/audio/<id>`、`/stream/<id>`、`/health`。把该 URL 填进 `docs/config.js` 的
+`WORKER_BASES[0]`，或在 App 的 setup 面板里粘贴。
+
+> Worker 的部署方式仍然保留（`cd worker && npx wrangler deploy`）——两者共用
+> `worker/index.js` 同一份实现。`WORKER_BASES` 是有序列表，音频报错时 App 会自动切到
+> 下一个，所以填错、或某个域名日后被封，都不会让播放器直接死掉。
+
+#### 两种交付方式
+
+- `/audio/<id>` —— **302** 跳到新的签名 CDN 地址。开销最小，浏览器直连 CloudFront。
+  `cf-media.sndcdn.com` 可达时用这个。
+- `/stream/<id>` —— 直接**代理字节流**，并转发 `Range`。会消耗 Cloudflare 带宽，但客户端
+  只跟一个域名通信 —— 万一 CDN 哪天被封就用它。
+
+#### Why this exists
+
+The site embeds SoundCloud players. Their public podcast feed
 gives a permanent mp3 URL, but it **lags behind new uploads** and its first
 redirect carries **no CORS header** — so the browser cannot read the bytes, which
 is exactly what sentence detection needs. Verified against a real browser:
@@ -194,7 +232,11 @@ scraper/
   nil.py              product-page parser
   sync.py             the sync pipeline
   scrape.py           shared fetch/state helpers
-worker/index.js       Cloudflare Worker (audio resolver)
+worker/index.js       the resolver itself — ONE implementation, two deploy targets
+wrangler.toml         Cloudflare Pages target (root) -> <name>.pages.dev
+worker/wrangler.toml  Cloudflare Workers target      -> <name>.<sub>.workers.dev
+functions/            Pages Functions: thin delegates to worker/index.js
+  health.js audio/[id].js stream/[id].js
 tools/                headless-Chrome test harnesses (not shipped)
 build/raw/            committed page cache, so daily syncs are incremental
 ```
@@ -226,6 +268,8 @@ python tools/browser_probe.py tools/worker_path_smoke.html --root docs --wait 23
 python tools/browser_probe.py tools/cors_audio_probe.html --root docs --wait 170
 node worker/test_local.mjs 2396246388                  # public track
 node worker/test_local.mjs 1494651385 s-sfkIGtrpGXf    # private track
+node worker/test_pages_functions.mjs                   # Pages Functions wiring (no deploy)
+node tools/diagnose_hosts.sh                           # what is reachable from THIS network
 node tools/local_worker.mjs 8787                       # Worker behind plain node
 python tools/check_worker.py http://127.0.0.1:8787     # verify a deployment
 python tools/segment_probe.py --slug paris-butter-shop --level 3

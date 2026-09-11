@@ -10,7 +10,7 @@
 import { settings } from "./store.js";
 import { audioCache, segCache } from "./store.js";
 import { segmentUrl } from "./segment.js";
-import { WORKER_BASE, PODCAST_BASE } from "./config.js";
+import { WORKER_BASES, PODCAST_BASE } from "./config.js";
 
 /** Sentinel meaning "explicitly run without a resolver, even if one is configured". */
 export const OFF = "__off__";
@@ -23,11 +23,28 @@ const fmt = (t) => {
 };
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
+// Which entry of WORKER_BASES we are currently on.  Advanced by _fail() when a
+// base turns out to be unreachable (e.g. workers.dev behind the GFW), so a
+// blocked base costs one failed request instead of a dead player.
+let baseIdx = 0;
+
 export const workerBase = () => {
   const s = settings.worker || "";
   if (s === OFF) return "";                 // "run without a resolver" on purpose
-  return (s || WORKER_BASE || "").replace(/\/+$/, "");
+  if (s) return s.replace(/\/+$/, "");
+  const list = WORKER_BASES.filter(Boolean);
+  return (list[baseIdx] || "").replace(/\/+$/, "");
 };
+
+/** Move to the next configured base.  False when there is nothing left to try. */
+export const nextWorkerBase = () => {
+  if (settings.worker) return false;        // an explicit choice is not overridden
+  const list = WORKER_BASES.filter(Boolean);
+  if (baseIdx + 1 >= list.length) return false;
+  baseIdx += 1;
+  return true;
+};
+
 export const hasCors = () => !!workerBase();
 
 export function audioUrlFor(track, secret) {
@@ -71,6 +88,7 @@ class Player extends EventTarget {
     this.shadowReps = 0;
     this.busy = null;
     this.blobUrl = null;
+    this.wantPlay = false;
     this._wire();
   }
 
@@ -95,6 +113,19 @@ class Player extends EventTarget {
   }
 
   _fail() {
+    // An unreachable resolver host fails right here -- in mainland China
+    // workers.dev is DNS-poisoned while pages.dev is not.  Step to the next
+    // configured base and retry before reporting anything to the user; the retry
+    // count is bounded because nextWorkerBase() only returns true while there are
+    // bases left to try.
+    if (!this.blobUrl && this.track && nextWorkerBase()) {
+      this.audio.src = audioUrlFor(this.track, this.secret);
+      this.audio.load();
+      this._repaint();
+      this._emit("resolver-switch", { base: workerBase() });
+      if (this.wantPlay) this.play();
+      return;
+    }
     const e = this.audio.error;
     const code = e ? e.code : 0;
     const reason = { 1: "aborted", 2: "network", 3: "decode", 4: "source not supported" }[code] || "unknown";
@@ -169,10 +200,11 @@ class Player extends EventTarget {
 
   /* ------------------------------------------------------------- controls */
   play() {
+    this.wantPlay = true;
     const p = this.audio.play();
     if (p && p.catch) p.catch(() => this._emit("blocked"));
   }
-  pause() { this.audio.pause(); }
+  pause() { this.wantPlay = false; this.audio.pause(); }
   toggle() { this.audio.paused ? this.play() : this.pause(); }
   seek(t, keepPaused = false) {
     this.audio.currentTime = clamp(t, 0, this.audio.duration || t);
