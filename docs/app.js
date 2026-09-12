@@ -436,6 +436,7 @@ async function openLevel(lv, { autoplay = true, restore = null } = {}) {
     autoplay,
   });
   if (restore && restore.pos && player.audio.duration) player.seek(restore.pos, true);
+  syncBarHeight();   // load() folds the panel away, so re-measure the reserved space
 }
 
 /* ------------------------------------------------------------- word sheet */
@@ -566,6 +567,7 @@ function openSetup() {
       <button class="primary" id="wtest">Test</button>
       <button id="wsave">Save</button>
       <button id="wclear">Clear</button>
+      <button id="wrefresh">Force refresh</button>
       <button id="wclose">Close</button>
     </div>
     <div class="pnote" style="margin-top:12px">
@@ -581,6 +583,13 @@ function openSetup() {
   });
   sheet.querySelector("#wclear").addEventListener("click", () => {
     settings.worker = ""; sheet.querySelector("#wu").value = ""; stat("Cleared.");
+  });
+  // Same repair the app runs by itself when it notices the shell is stale -- here
+  // on demand, because that is the only way to trigger it on a phone with no
+  // devtools if the automatic check cannot reach the network.
+  sheet.querySelector("#wrefresh").addEventListener("click", () => {
+    stat("Clearing the cached shell and reloading…");
+    repairShell("requested from the setup sheet");
   });
   sheet.querySelector("#wtest").addEventListener("click", async () => {
     const u = sheet.querySelector("#wu").value.trim().replace(/\/+$/, "");
@@ -742,6 +751,69 @@ loadIndex().then(() => {
     Run <code>python scraper/sync.py</code> first, then reload.</div>`;
 });
 
+/* ------------------------------------------------------- reserved bottom space */
+
+// body's bottom padding must equal the COLLAPSED bar, because the controls overlay
+// the article when opened. Measured rather than hardcoded so font size, zoom and
+// the safe-area inset are all accounted for -- but only while collapsed: measuring
+// an open panel would reserve room for it and defeat the overlay.
+const bottombar = document.querySelector(".bottombar");
+function syncBarHeight() {
+  if (!bottombar || !player.collapsed) return;
+  const h = Math.round(bottombar.getBoundingClientRect().height);
+  if (h > 0) document.documentElement.style.setProperty("--bar-h", `${h}px`);
+}
+player.addEventListener("collapsed", syncBarHeight);
+window.addEventListener("resize", syncBarHeight);
+window.addEventListener("orientationchange", syncBarHeight);
+syncBarHeight();
+
+/* ---------------------------------------------------- stale-shell self-repair */
+
+// A service worker that lags leaves the page running a MIX of old and new files,
+// and the only symptom is a line number in a console stack trace -- which once cost
+// an entire debugging round, and is impossible to act on from a phone. So every
+// load asks the server which build it has.
+//
+// version.json is the probe because it is never precached and sw.js refuses to
+// cache it: a lagging worker has never seen the file, so its cache-first handler
+// misses and the request reaches the network. That is what lets this bootstrap
+// from an already-broken state, which a check against a cached value could not.
+async function repairShell(reason) {
+  const did = [];
+  try {
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister().catch(() => {})));
+      did.push(`${regs.length} service worker(s) unregistered`);
+    }
+  } catch { /* nothing we can do; the reload below is still worth trying */ }
+  try {
+    const keys = await caches.keys();
+    await Promise.all(keys.map((k) => caches.delete(k).catch(() => {})));
+    did.push(`${keys.length} cache(s) deleted`);
+  } catch { /* same */ }
+  console.warn(`[nil] stale shell — ${reason}; ${did.join(", ")}; reloading`);
+  try { sessionStorage.setItem("nil.repairedAt", String(Date.now())); } catch {}
+  location.reload();
+}
+
+async function checkShellBuild() {
+  // Bounded: repairing reloads, and if the server build still disagrees we must not
+  // reload forever. One repair per minute at most, so a stuck state retries slowly
+  // instead of looping.
+  let last = 0;
+  try { last = Number(sessionStorage.getItem("nil.repairedAt")) || 0; } catch {}
+  if (last && Date.now() - last < 60000) return;
+  try {
+    const r = await fetch(`version.json?t=${Date.now()}`, { cache: "no-store" });
+    const j = await r.json();
+    if (j && j.build && j.build !== BUILD) {
+      await repairShell(`server has ${j.build}, this page is ${BUILD}`);
+    }
+  } catch { /* offline, or no version.json yet: nothing to compare, leave it be */ }
+}
+
 if ("serviceWorker" in navigator) {
   // Shell assets are served cache-first, so a new build only lands on the NEXT
   // open -- and if the worker itself lags, the page can run a MIX of old and new
@@ -761,3 +833,9 @@ if ("serviceWorker" in navigator) {
       .catch(() => {});
   });
 }
+
+// Runs after the shell is up, so a stale cache is fixed without blocking the first
+// paint. Appended to the debug handle too, so it can be triggered by hand from a
+// phone console or the setup sheet.
+checkShellBuild();
+window.__nil.repair = repairShell;

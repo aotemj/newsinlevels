@@ -115,6 +115,29 @@ let started = false;
     // ---------- player
     const pl = d.querySelector('#player');
     note('player.visible', pl && !pl.hidden);
+
+    // The controls must START folded away -- expanded by default they sat on the
+    // last lines of every article, which is what prompted the change.
+    note('player.collapsed_by_default', !!pl.querySelector('[data-a="bar"]'));
+    note('player.collapsed_hides_full_panel',
+      !pl.querySelector('[data-a="scrub"]') && !pl.querySelector('.rate-btn'));
+    note('player.collapsed_height', Math.round(pl.getBoundingClientRect().height));
+
+    // The reserved space must equal the COLLAPSED bar: more and the article is
+    // padded for a panel that is not showing, less and text hides behind it.
+    const barH = d.querySelector('.bottombar').getBoundingClientRect().height;
+    const padB = parseFloat(w.getComputedStyle(d.body).paddingBottom) || 0;
+    note('player.reserved_space', { paddingBottom: Math.round(padB), bottombar: Math.round(barH) });
+    note('player.reserved_space_matches_collapsed_bar', Math.abs(padB - barH) <= 1);
+
+    // Expanding is a tap, and it OVERLAYS: the article must not reflow.
+    const scrollBefore = d.body.scrollHeight;
+    pl.querySelector('[data-a="togglecollapse"]').click();
+    await wait(300);
+    note('player.expands_on_tap', !!pl.querySelector('[data-a="scrub"]'));
+    note('player.expand_does_not_reflow_article', d.body.scrollHeight === scrollBefore,
+      `${scrollBefore} -> ${d.body.scrollHeight}`);
+
     note('player.has_controls', !!pl.querySelector('[data-a="toggle"]'));
     note('player.has_scrub', !!pl.querySelector('[data-a="scrub"]'));
     note('player.has_rate', !!pl.querySelector('[data-a="rate"]'));
@@ -151,11 +174,23 @@ let started = false;
       audio.pause();
     }
 
-    // rate control actually changes playbackRate
-    const rate = pl.querySelector('[data-a="rate"]');
-    rate.value = '1.25';
-    rate.dispatchEvent(new w.Event('input', { bubbles: true }));
-    note('player.rate_applied', audio.playbackRate);
+    // Rate is a preset cycler now: one tap moves to the next preset and wraps.
+    // Asserted relative to wherever it started, because the stored value comes from
+    // localStorage and the old build could have saved anything on the 0.05 grid.
+    const RATES = [0.75, 1, 1.25, 1.5, 2];
+    const startIdx = RATES.indexOf(audio.playbackRate);
+    note('player.rate_starts_on_a_preset', startIdx >= 0, audio.playbackRate);
+    const seen = [];
+    for (let i = 0; i < RATES.length; i++) {
+      pl.querySelector('[data-a="rate"]').click();
+      await wait(120);
+      seen.push(audio.playbackRate);
+    }
+    const want = RATES.map((_, i) => RATES[(startIdx + 1 + i) % RATES.length]);
+    note('player.rate_cycle', seen);
+    note('player.rate_cycle_is_the_presets', JSON.stringify(seen) === JSON.stringify(want),
+      `${seen.join(" -> ")} (wanted ${want.join(" -> ")})`);
+    note('player.rate_label', pl.querySelector('[data-a="rate"]').textContent.trim());
 
     // A-B marker
     pl.querySelector('[data-a="ab"]').click();

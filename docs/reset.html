@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reset the cached app</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; padding: 28px 20px 40px; font: 16px/1.55 -apple-system, BlinkMacSystemFont,
+         "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 34rem; margin-inline: auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .zh { color: #666; font-size: 15px; margin: 0 0 22px; }
+  p { margin: 0 0 14px; }
+  button, a.btn { display: inline-block; font: inherit; font-weight: 600; padding: 13px 20px;
+    border-radius: 12px; border: 1px solid #ccc; background: #fff; color: #111;
+    text-decoration: none; cursor: pointer; margin: 0 8px 10px 0; }
+  a.btn.primary, button.primary { background: #0d7a6a; border-color: #0d7a6a; color: #fff; }
+  pre { background: rgba(127,127,127,.12); padding: 12px 14px; border-radius: 10px;
+    font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; margin: 0 0 18px; }
+  .note { font-size: 13.5px; color: #666; }
+</style>
+</head>
+<body>
+
+<h1>Reset the cached app</h1>
+<p class="zh">清除浏览器里缓存的旧版本，然后重新打开应用。</p>
+
+<p>This page clears the service worker and every cache this site stored. It is
+  deliberately self-contained — no external stylesheet or script — so a stale
+  cache cannot break the one page that exists to fix a stale cache.</p>
+
+<pre id="log">starting…</pre>
+
+<p>
+  <a class="btn primary" id="go" href="./">Open the app</a>
+  <button id="again">Run the reset again</button>
+</p>
+
+<p class="note">Your saved words, favourites and reading progress live in IndexedDB
+  and are <b>not</b> touched by this page.</p>
+
+<script>
+// Runs immediately: this is a rescue page, so it should not require a second tap.
+const log = document.getElementById("log");
+const lines = [];
+const say = (m) => { lines.push(m); log.textContent = lines.join("\n"); log.scrollTop = log.scrollHeight; };
+
+async function reset() {
+  lines.length = 0;
+  say("starting…");
+
+  // 1. service workers: unregister every scope, not just ours
+  if ("serviceWorker" in navigator) {
+    try {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      if (!regs.length) say("service workers: none registered");
+      for (const r of regs) {
+        const ok = await r.unregister();
+        say(`service worker unregistered: ${r.scope} ${ok ? "✓" : "✗"}`);
+      }
+    } catch (e) {
+      say("service workers: could not unregister — " + (e.message || e));
+    }
+  } else {
+    say("service workers: not supported here");
+  }
+
+  // 2. Cache Storage: everything, including entries from older builds
+  if (window.caches) {
+    try {
+      const keys = await caches.keys();
+      if (!keys.length) say("caches: none stored");
+      for (const k of keys) {
+        const ok = await caches.delete(k);
+        say(`cache deleted: ${k} ${ok ? "✓" : "✗"}`);
+      }
+    } catch (e) {
+      say("caches: could not list — " + (e.message || e));
+    }
+  } else {
+    say("caches: not supported here");
+  }
+
+  // 3. which build the server has now, for the you-can-see-it record
+  try {
+    const r = await fetch("version.json?t=" + Date.now(), { cache: "no-store" });
+    const j = await r.json();
+    say("server build: " + (j.build || "?"));
+  } catch (e) {
+    say("server build: could not read version.json (" + (e.message || e) + ")");
+  }
+
+  // 4. the navigation is network-first in our worker, so a plain reload is enough,
+  //    but a query keeps the HTTP cache from answering the document as well
+  document.getElementById("go").href = "./?reset=" + Date.now();
+  say("");
+  say("done — now tap “Open the app”.");
+}
+
+document.getElementById("again").addEventListener("click", reset);
+reset();
+</script>
+
+</body>
+</html>

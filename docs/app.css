@@ -62,9 +62,13 @@ body {
   padding-bottom: calc(58px + env(safe-area-inset-bottom, 0px));
   -webkit-font-smoothing: antialiased;
 }
+/* Reserved space is the COLLAPSED bar only. The controls overlay the article when
+   opened, so this never changes and the text never reflows -- which is the whole
+   point of folding them away. --bar-h is measured by app.js so it stays right
+   across font/zoom/safe-area differences instead of being a guessed literal. */
+:root { --bar-h: 112px; }
 body.has-player {
-  padding-bottom: 150px;
-  padding-bottom: calc(150px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: var(--bar-h);
 }
 button { font: inherit; color: inherit; }
 a { color: inherit; text-decoration: none; }
@@ -246,8 +250,22 @@ html[data-theme="dark"] .player { box-shadow: 0 -6px 22px rgba(0,0,0,.4); }
 .pill-btn.warn { border-color: var(--l3); color: var(--l3); }
 .pnote { font-size: 11.5px; color: var(--muted); padding: 4px 2px 0; }
 .pstatus { font-size: 12.5px; color: var(--muted); padding: 2px 0 0; }
-.rate-wrap { display: flex; align-items: center; gap: 4px; }
-.rate-wrap input { width: 84px; accent-color: var(--accent); }
+
+/* Collapsed controls: one slim row. The full panel used to sit on the last lines
+   of every article, so it now starts folded; tapping this row opens it OVER the
+   article (see --bar-h above, which reserves only the collapsed height). */
+.pbar { display: flex; align-items: center; gap: 10px; min-height: 42px; cursor: pointer; }
+.pbar .pbtn.primary { width: 36px; height: 36px; }
+.pbar .pbtn.primary svg { width: 17px; height: 17px; }
+.pbar .ptime { min-width: 0; }
+.pbar .ptime.dim { opacity: .45; }
+.pbar .ptime.busy { opacity: .8; letter-spacing: 1px; }
+.minitrack { position: relative; flex: 1; height: 3px; background: var(--surface-2);
+  border-radius: 2px; overflow: hidden; }
+.minitrack .now { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--accent); }
+.pbtn.chev { flex: 0 0 auto; color: var(--muted); padding: 6px; }
+.pbtn.chev svg { width: 18px; height: 18px; }
+.rate-btn { min-width: 48px; font-variant-numeric: tabular-nums; }
 
 /* ---------------------------------------------------------------- tabs */
 .tabs {

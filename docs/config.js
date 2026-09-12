@@ -62,7 +62,7 @@ export const AUDIO_MODE = "stream";
  * the app now states which build it is. BUMP THIS with sw.js VERSION on every
  * shell change; the two are the same build.
  */
-export const BUILD = "nil-v6";
+export const BUILD = "nil-v7";
 
 /**
  * Fallback used when no resolver is configured: the public podcast feed mp3.
