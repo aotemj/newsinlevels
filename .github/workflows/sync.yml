@@ -58,3 +58,15 @@ jobs:
           print(f"newest  : {s[0]['title']}")
           print(f"baked at: {i['generated']}")
           PY
+
+  # Publish the refreshed data to Cloudflare Pages.
+  #
+  # This is a separate job calling the shared workflow rather than relying on the
+  # push above to trigger deploy-pages.yml: the commit is made with the default
+  # GITHUB_TOKEN, and GitHub deliberately does not let such a push fire another
+  # workflow. Without this the site would keep serving yesterday's data every
+  # morning while the repository showed today's.
+  deploy:
+    needs: sync
+    uses: ./.github/workflows/deploy-pages.yml
+    secrets: inherit

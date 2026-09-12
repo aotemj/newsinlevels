@@ -1,3 +1,9 @@
-# The scraper only uses the Python standard library -- no third-party packages.
-# Kept so `pip install -r requirements.txt` in the docs is a no-op rather than
-# an error.
+# The scraper itself only uses the Python standard library -- no third-party
+# packages are needed to run it, so `pip install -r requirements.txt` in the docs
+# is deliberately a no-op for the crawl.
+#
+# PyYAML is here for tools/check_workflows.py, which parses .github/workflows/*.yml
+# so a broken or inconsistent workflow is caught locally instead of surfacing as a
+# red X in the Actions tab after a push. Without it, that checker skips its most
+# useful assertions rather than failing.
+pyyaml>=6

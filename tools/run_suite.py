@@ -79,6 +79,17 @@ def run(name, harness, query, wait, port):
 
 def main():
     wanted = sys.argv[1:]
+    # Cheap, offline, and catches workflow drift that would otherwise only show up
+    # as a red X in the Actions tab minutes after a push.
+    if not wanted:
+        print("########## workflows ##########")
+        r = subprocess.run([PY, os.path.join(ROOT, "tools", "check_workflows.py")],
+                           cwd=ROOT)
+        if r.returncode != 0:
+            print("SUITE: PROBLEMS (workflows)")
+            return 1
+        print()
+
     ok = True
     for name, harness, query, wait, port in SUITE:
         if wanted and name not in wanted:
