@@ -101,12 +101,39 @@ CloudFront 边缘缓存下来的错误对象**（一个 2016 年的 10 字节 S3
 
 ```bash
 npx wrangler login          # 一次性
-npx wrangler pages deploy   # 在仓库根目录运行（读根目录的 wrangler.toml）
+npx wrangler pages deploy   # 一般不需要手敲，见下
 ```
 
 部署到 `https://nil-audio.pages.dev`：静态资源来自 `docs/`，解析器由 `functions/` 挂载在
 `/audio/<id>`、`/stream/<id>`、`/health`。把该 URL 填进 `docs/config.js` 的
 `WORKER_BASES[0]`，或在 App 的 setup 面板里粘贴。
+
+#### 自动部署（不用再手敲那条命令）
+
+`.github/workflows/deploy-pages.yml` 会在**推送到 main** 时自动部署，也可以从 Actions 页
+手动触发。它最后会**校验线上构建号和仓库里的一致**才判定成功 —— 因为"部署步骤退出码 0"
+和"站点真的换版了"是两件事，而静默失败的部署看起来和成功一模一样。
+
+需要在仓库里加**两个 Secret**（Settings → Secrets and variables → Actions）：
+
+| Secret | 值 |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | 在 <https://dash.cloudflare.com/profile/api-tokens> 建一个 **Custom token**，权限选 **Account → Cloudflare Pages → Edit** |
+| `CLOUDFLARE_ACCOUNT_ID` | 控制台右侧栏的 account id |
+
+> 注意：模板 "Edit Cloudflare Workers" **不包含 Pages 权限**，所以要用 Custom token。
+> 如果你还想让 `cd worker && wrangler deploy` 也走 CI，再加 **Account → Workers Scripts → Edit**。
+
+**为什么 `sync.yml` 里也有一份部署步骤**：每日同步是用默认的 `GITHUB_TOKEN` 提交的，而
+GitHub **不会**让这种提交触发其它 workflow（防递归）。如果只靠 push 触发，数据每天更新、
+线上却一直停在昨天。所以 sync 是**直接调用**同一个 workflow（`workflow_call`），实现只有一份。
+
+改完 workflow 本地就能验证，不必等 Actions 变红：
+
+```bash
+python tools/check_workflows.py     # YAML、uses: 指向、构建号一致性
+```
+
 
 > Worker 的部署方式仍然保留（`cd worker && npx wrangler deploy`）——两者共用
 > `worker/index.js` 同一份实现。App 会按 base × mode 顺序逐个尝试（列表见 `config.js` 的
