@@ -44,6 +44,38 @@ jobs:
         with:
           node-version: "20"
 
+      # "Not logged in." from wrangler is what you get when the token is missing,
+      # mistyped, or set as an Environment secret this job does not declare -- and
+      # it says nothing about which. Name the culprit instead: it is the difference
+      # between a 5-second fix and an afternoon.
+      - name: Check the Cloudflare credentials are present
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=""
+          [ -n "$CF_TOKEN" ]   || missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -n "$CF_ACCOUNT" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secret(s):$missing"
+            echo "Add them at Settings -> Secrets and variables -> Actions -> Repository secrets."
+            echo "  CLOUDFLARE_API_TOKEN : custom token with Account -> Cloudflare Pages -> Edit"
+            echo "                         (the 'Edit Cloudflare Workers' template does NOT include Pages)"
+            echo "  CLOUDFLARE_ACCOUNT_ID: the id in the dashboard's right-hand sidebar"
+            echo "If they already exist, check they are Repository secrets, not Environment"
+            echo "secrets -- this job declares no environment, so it cannot read those."
+            exit 1
+          fi
+          echo "both secrets are present"
+
+      # Prints the account and the token's own permission list, so a token that is
+      # valid but missing Pages:Edit is obvious before the deploy fails obscurely.
+      - name: Show which account and token this will use
+        run: npx --yes wrangler@4 whoami
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       # Reads ./wrangler.toml: name = nil-audio, pages_build_output_dir = docs,
       # and picks up functions/ from the repo root. No arguments needed.
       - name: Deploy to Cloudflare Pages

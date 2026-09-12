@@ -110,6 +110,26 @@ vj = json.load(open(os.path.join(ROOT, "docs", "version.json"), encoding="utf-8"
 (ok if vj.get("build") == want else bad)(
     f"version.json build={vj.get('build')!r} vs config.js {want!r}")
 
+print("=== secret names used by workflows match the README ===")
+# A secret is created by hand in GitHub, so a rename in the workflow cannot be
+# verified there -- but it CAN be checked that the docs still name the same one.
+# Drift here means someone follows the README and the run still says "Not logged in".
+readme = ""
+for candidate in ("README.md",):
+    p = os.path.join(ROOT, candidate)
+    if os.path.exists(p):
+        readme = open(p, encoding="utf-8").read()
+used = set()
+for name in sorted(os.listdir(WF)):
+    if name.endswith((".yml", ".yaml")):
+        used |= set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)",
+                               open(os.path.join(WF, name), encoding="utf-8").read()))
+used.discard("GITHUB_TOKEN")
+if not used:
+    bad("no secrets.* references found — the deploy cannot authenticate")
+for s in sorted(used):
+    (ok if s in readme else bad)(f"{s} referenced in a workflow and documented: {s in readme}")
+
 print()
 if problems:
     print(f"{len(problems)} problem(s):")
