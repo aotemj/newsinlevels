@@ -1,4 +1,4 @@
 {
-  "build": "nil-v7",
+  "build": "nil-v8",
   "note": "Which shell the SERVER currently has. The app fetches this with no-store and compares it against the BUILD it was loaded with; a mismatch means the browser is running a stale service-worker cache, and the app repairs itself. Deliberately NOT precached, and never cached by sw.js -- otherwise the check could never see a new value."
 }
