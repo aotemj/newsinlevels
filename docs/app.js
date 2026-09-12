@@ -1,6 +1,6 @@
 /** Reader: everything in one place. */
 import { settings, favorites, progress, vocab, audioCache, segCache } from "./store.js";
-import { player, hasCors, workerBase, markBaseFailed, resolverState, OFF } from "./player.js";
+import { player, hasCors, workerBase, advanceResolver, resolverState, audioMode, audioUrlFor, OFF } from "./player.js";
 import { WORKER_BASE } from "./config.js";
 
 /* ------------------------------------------------------------------ helpers */
@@ -589,7 +589,6 @@ function openSetup() {
     out.style.whiteSpace = "pre-line";     // the report is multi-line
     const track = player.track || "2396246388";
     const log = [];
-    const t0 = Date.now();
     // The connection just hangs on a blocked network, so every hop needs its own
     // deadline -- otherwise "Test" spins forever and tells the user nothing.
     const deadlined = (p, ms, what) => Promise.race([
@@ -598,42 +597,61 @@ function openSetup() {
     ]);
 
     stat("Testing…");
+
+    // 1. is the resolver host reachable at all?
     try {
       const h = await deadlined(fetch(u + "/health", { cache: "no-store" }), 10000, "/health");
       const j = await h.json();
-      log.push(`1. resolver reachable — ${Date.now() - t0}ms, client id: ${j.clientIdSource}`);
+      log.push(`1. resolver reachable — client id: ${j.clientIdSource}`);
     } catch (e) {
       log.push(`1. resolver UNREACHABLE — ${e.message}`);
       log.push("");
-      log.push("This is the broken hop: the device cannot reach this URL at all.");
-      log.push("A *.workers.dev address is DNS-poisoned in mainland China; use *.pages.dev.");
+      log.push("The device cannot reach this URL at all. A *.workers.dev address is");
+      log.push("DNS-poisoned in mainland China; *.pages.dev resolves normally.");
       return stat(log.join("\n"));
     }
 
+    // 2. can it resolve a track, and where does it point?
+    let cdnUrl = null;
     try {
       const r = await deadlined(fetch(`${u}/audio/${track}?probe=1`, { cache: "no-store" }), 25000,
-                                 "test resolve");
+                                "test resolve");
       const j = await r.json();
-      log.push(`2. resolver can resolve a track — CDN host: ${j.host}`);
-      try {
-        // mode:"no-cors" keeps this a reachability probe: it rejects on a network
-        // failure and resolves (opaque) on success, without downloading the clip.
-        await deadlined(fetch(j.url, { mode: "no-cors", method: "HEAD" }), 12000, "CDN check");
-        log.push("3. audio CDN reachable — playback will work");
-      } catch (e) {
-        log.push(`3. audio CDN NOT reachable — ${e.message}`);
-        log.push("   playback and sentence timings will both fail from this network");
-      }
+      cdnUrl = j.url;
+      log.push(`2. resolve OK — CDN host: ${j.host}`);
     } catch (e) {
       log.push(`2. resolve FAILED — ${e.message}`);
       log.push("   the resolver is up but cannot reach SoundCloud itself");
+      return stat(log.join("\n"));
+    }
+
+    // 3. /stream — the resolver fetches the bytes. This is the mode that works
+    //    where the client's own route to the CDN does not.
+    try {
+      const r = await deadlined(fetch(`${u}/stream/${track}`, {
+        cache: "no-store", headers: { Range: "bytes=0-2047" },
+      }), 30000, "stream check");
+      const b = new Uint8Array(await r.arrayBuffer());
+      const audio = (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) ||
+                    (b[0] === 0xff && (b[1] & 0xe0) === 0xe0);
+      log.push(`3. /stream — ${r.status}, ${b.length} bytes${audio ? ", real audio ✓" : ", NOT audio ✗"}`);
+    } catch (e) {
+      log.push(`3. /stream FAILED — ${e.message}`);
+    }
+
+    // 4. /audio — the client fetches the CDN itself. Measure it separately: it can
+    //    fail (403 from a cached error object on the CF edge) while /stream works.
+    try {
+      const r = await deadlined(fetch(cdnUrl, { cache: "no-store" }), 20000, "direct CDN check");
+      log.push(`4. direct CDN — ${r.status}${r.status === 403 ? " (expected in mainland China)" : ""}`);
+    } catch (e) {
+      log.push(`4. direct CDN FAILED — ${e.message}`);
     }
 
     const why = player.timingsReason();
-    log.push(`4. timings: ${why || "ready"}`);
     const rs = resolverState();
-    if (rs.failed.length) log.push(`   bases already tried and failed: ${rs.failed.join(", ")}`);
-    if (rs.all.length > 1) log.push(`   configured bases: ${rs.all.join(", ")}`);
+    log.push(`5. using ${rs.current} in "${rs.mode}" mode — timings: ${why || "ready"}`);
+    log.push(`   attempt ${rs.index + 1}/${rs.attempts.length}: ${rs.attempts.join(" | ")}`);
     stat(log.join("\n"));
   });
   sheet.querySelector("#wauto").addEventListener("click", (e) => {
@@ -703,8 +721,10 @@ try {
 window.__nil = { player, settings, favorites, progress, vocab, audioCache, segCache,
   route: () => route, current: () => current, index: () => INDEX,
   // Reachable from the device console: __nil.resolver.state() answers "which
-  // resolver am I on, and what has already failed" on a phone with no devtools.
-  resolver: { base: workerBase, state: resolverState, fail: markBaseFailed, hasCors } };
+  // resolver am I on, in which mode, and what has already failed" on a phone with
+  // no devtools.
+  resolver: { base: workerBase, mode: audioMode, state: resolverState, url: audioUrlFor,
+              advance: advanceResolver, hasCors } };
 
 loadIndex().then(() => {
   if (!settings.worker && !WORKER_BASE) {

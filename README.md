@@ -78,12 +78,26 @@ each morning (~1 min once the committed raw cache is warm) and commits the resul
 | `*.pages.dev` | ✅ 可达（`cloudflare-pages.pages.dev` → 真实 Cloudflare IP + HTTP 522） |
 | `api-v2.soundcloud.com` | ❌ 超时 —— 污染为 Dropbox / Facebook 地址 |
 | `feeds.soundcloud.com` | ❌ 超时 |
-| `cf-media.sndcdn.com` | ✅ **HTTP 403**（TLS 握手完成、服务器正常应答，只是路径无效） |
+| `cf-media.sndcdn.com` | ⚠️ **能握手但拿不到音频** —— 见下 |
 
-被墙的是 **Worker 自己的域名** 和 **SoundCloud 的 API/feed**；**音频字节所在的 CDN 是通的**。
-也就是说 302 跳转的字节投递本来没问题，卡住的是"解析"这一步。
-`pages.dev` 和 `workers.dev` 同为 Cloudflare，但只有前者没被污染，而 Pages Functions
-跑的就是同一套 Worker 运行时 —— 所以搬到 Pages 即可，零成本、不用买域名。
+被墙的是 **Worker 自己的域名** 和 **SoundCloud 的 API/feed**，所以"解析"这一步在客户端做不了，
+必须放在 Worker 侧。`pages.dev` 和 `workers.dev` 同为 Cloudflare，但只有前者没被污染，而
+Pages Functions 跑的就是同一套 Worker 运行时 —— 所以搬到 Pages 即可，零成本、不用买域名。
+
+**音频字节也必须经 Worker 转发（`/stream`），不能靠 302 让客户端自己去取。** 这一条是被实测
+推翻后的修正（早先曾据 `cf-media` 返回 403 而误判为"可达且正常"）：
+
+| 证据 | 结果 |
+|---|---|
+| 签名地址本身 | **有效** —— 由 Cloudflare 侧取同一个 URL 得 `206` + `audio/mpeg` + ID3 |
+| 客户端直连该 URL | **403**，响应体是 10 字节纯文本 `Forbidden` |
+| TLS 证书 | `CN=*.sndcdn.com` / `Amazon RSA 2048 M01`，`Verify return code: 0` → **没有被中间人劫持** |
+| 响应头 | `server: AmazonS3`、`x-cache: Error from cloudfront`、`age: 52887`、`x-amz-cf-pop: LAX54-P3` |
+
+也就是说：签名的有效期没问题（实测还剩 172 秒），音频也确实存在，但**客户端这条网络路径拿到的是
+CloudFront 边缘缓存下来的错误对象**（一个 2016 年的 10 字节 S3 占位文件）。同一个 URL 从 Cloudflare
+取就是正常音频 —— 差别只在网络路径。所以默认走 `/stream`（Worker 转发字节、转发 `Range`），
+`/audio`（302）降级为备选。
 
 ```bash
 npx wrangler login          # 一次性
@@ -95,15 +109,15 @@ npx wrangler pages deploy   # 在仓库根目录运行（读根目录的 wrangle
 `WORKER_BASES[0]`，或在 App 的 setup 面板里粘贴。
 
 > Worker 的部署方式仍然保留（`cd worker && npx wrangler deploy`）——两者共用
-> `worker/index.js` 同一份实现。`WORKER_BASES` 是有序列表，音频报错时 App 会自动切到
-> 下一个，所以填错、或某个域名日后被封，都不会让播放器直接死掉。
+> `worker/index.js` 同一份实现。App 会按 base × mode 顺序逐个尝试（列表见 `config.js` 的
+> `WORKER_BASES` 与 `AUDIO_MODE`），任何一个不可用都只会浪费一次尝试，不会让播放器死掉。
 
 #### 两种交付方式
 
-- `/audio/<id>` —— **302** 跳到新的签名 CDN 地址。开销最小，浏览器直连 CloudFront。
-  `cf-media.sndcdn.com` 可达时用这个。
-- `/stream/<id>` —— 直接**代理字节流**，并转发 `Range`。会消耗 Cloudflare 带宽，但客户端
-  只跟一个域名通信 —— 万一 CDN 哪天被封就用它。
+- `/stream/<id>` —— **默认**。解析器取到签名地址后**代为取字节**并转发给你，`Range` 一并转发。
+  客户端只跟一个域名通信。缺点是要消耗 Cloudflare 的带宽。
+- `/audio/<id>` —— **备选**。返回 302，让**你的浏览器自己去** `cf-media.sndcdn.com` 取。
+  开销最小，但在大陆实测会拿到上面那个缓存的 403，所以只在 `/stream` 失败时使用。
 
 #### Why this exists
 

@@ -188,8 +188,23 @@ export function align(sentenceTexts, spans) {
 /** Full pipeline: fetch bytes -> decode -> spans -> align. */
 export async function segmentUrl(url, sentenceTexts, onProgress = () => {}) {
   onProgress("downloading audio");
-  const resp = await fetch(url, { mode: "cors" });
-  if (!resp.ok) throw new Error(`audio fetch ${resp.status}`);
+  // Mark failures that mean "the bytes never arrived" -- the caller retries those
+  // on a different delivery route, and must NOT retry a genuine alignment failure.
+  let resp;
+  try {
+    resp = await fetch(url, { mode: "cors" });
+  } catch (e) {
+    const err = new Error(`audio fetch failed: ${e.message || e}`);
+    err.delivery = true;
+    throw err;
+  }
+  if (!resp.ok) {
+    // A 403 here is how a blocked/injected CDN response shows up: the resolver
+    // handed out a valid signed url but this network cannot use it.
+    const err = new Error(`audio fetch ${resp.status}`);
+    err.delivery = true;
+    throw err;
+  }
   const buf = await resp.arrayBuffer();
   onProgress(`decoding ${(buf.byteLength / 1024 | 0)} KB`);
   const decoded = await decode(buf);
