@@ -234,11 +234,13 @@ class Player extends EventTarget {
 
     // offline copy wins over the network
     let src = null;
+    let hadOffline = false;
     try {
       const blob = await audioCache.get(track);
-      if (blob) { this.blobUrl = URL.createObjectURL(blob); src = this.blobUrl; }
+      if (blob) { this.blobUrl = URL.createObjectURL(blob); src = this.blobUrl; hadOffline = true; }
     } catch {}
     if (!src) src = audioUrlFor(track, secret);
+    if (hadOffline) this._refreshSaved();
 
     this.audio.src = src;
     // Snap a stored value onto a preset: the old slider allowed 0.05 steps and
@@ -257,6 +259,15 @@ class Player extends EventTarget {
       // misleading "install the Worker" hint.
       else if (settings.autoSeg) { this.segmentNow().catch(() => {}); }
     }
+
+    // Offline copy, and deliberately the LAST thing here: caching must never delay
+    // playback. When the timing pass runs it downloads the whole clip anyway and
+    // hands the bytes over, so this costs nothing extra; only when it will not run
+    // is a separate background fetch needed.
+    const timingWillFetch = !this.times && this.sentences.length && hasCors() && settings.autoSeg;
+    if (!hadOffline && settings.cacheAudio && !timingWillFetch) {
+      this._cacheFromNetwork(this.track, this.secret);
+    }
   }
 
   async segmentNow(force = false) {
@@ -270,7 +281,9 @@ class Player extends EventTarget {
       for (let attempt = 0; ; attempt++) {
         try {
           const res = await segmentUrl(audioUrlFor(this.track, this.secret), this.sentences,
-            (m) => { this.busy = m; this._repaint(); });
+            (m) => { this.busy = m; this._repaint(); },
+            // Already-downloaded bytes: this is where offline caching costs nothing.
+            (blob) => this._autoCache(this.track, blob));
           if (!res.times) throw new Error(res.reason || "could not align audio to text");
           await segCache.put(this.track, res).catch(() => {});
           this._applySegments(res, false);
@@ -286,6 +299,9 @@ class Player extends EventTarget {
       }
     } catch (e) {
       this.segError = e && e.message ? e.message : String(e);
+      // The timing pass failed, so its bytes never came through. Fetch separately, so
+      // a broken alignment still leaves the clip available offline.
+      this._cacheFromNetwork(this.track, this.secret);
       throw e;
     } finally {
       this.busy = null;
@@ -378,16 +394,82 @@ class Player extends EventTarget {
   }
   clearAB() { this.ab = null; this._repaint(); }
 
+  /**
+   * Keep a copy of this clip for offline use. Automatic on load.
+   *
+   * Skipped when the user turned caching off, when they explicitly removed this clip
+   * before (a delete that silently reappears is worse than no delete at all), or when
+   * the browser reports Data Saver.
+   */
+  async _autoCache(track, blob) {
+    if (!track || !blob || !blob.size) return false;
+    if (!settings.cacheAudio) return false;
+    if (audioCache.isDismissed(track)) return false;
+    const conn = navigator.connection;
+    if (conn && conn.saveData) return false;
+    try {
+      await audioCache.put(track, blob);
+      this._emit("cached", { track, bytes: blob.size });
+      this._refreshSaved();
+      return true;
+    } catch (e) {
+      // Quota is the interesting failure: shed the evictable entries and retry once
+      // rather than letting one full disk silently disable offline audio.
+      if (e && /quota|storage/i.test(`${e.name} ${e.message}`)) {
+        await audioCache.enforceCap(64 * 1024 * 1024).catch(() => {});
+        try {
+          await audioCache.put(track, blob);
+          this._emit("cached", { track, bytes: blob.size, afterEviction: true });
+          this._refreshSaved();
+          return true;
+        } catch { /* fall through to the report below */ }
+      }
+      this._emit("cache-failed", { track, reason: String((e && e.message) || e) });
+      return false;
+    }
+  }
+
+  /**
+   * Fetch the clip purely to cache it -- used only when the timing pass will not run,
+   * since that pass downloads the same bytes anyway. Never awaited by load(), because
+   * a download must not delay playback.
+   */
+  async _cacheFromNetwork(track, secret) {
+    if (!settings.cacheAudio || !track) return;
+    try {
+      if (await audioCache.has(track)) return;
+      const r = await fetch(audioUrlFor(track, secret));
+      if (!r.ok) return;                 // the media element reports real failures
+      await this._autoCache(track, await r.blob());
+    } catch { /* offline or blocked: playback is unaffected, so stay quiet */ }
+  }
+
+  /** Is this clip PINNED (the trash button only makes sense for those)? */
+  async _refreshSaved() {
+    const m = this.track ? await audioCache.meta(this.track).catch(() => null) : null;
+    const v = !!(m && m.pinned);
+    if (v !== this.saved) { this.saved = v; this._repaint(); }
+    return v;
+  }
+
+  /** "Keep this offline": stores it, and excludes it from eviction. */
   async download() {
     if (!this.track) return;
     this.busy = "saving audio";
     this._repaint();
     try {
-      const r = await fetch(audioUrlFor(this.track, this.secret));
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const b = await r.blob();
-      await audioCache.put(this.track, b);
-      this._emit("saved", { bytes: b.size });
+      // Auto-caching usually already stored it, in which case keeping it is pure
+      // bookkeeping -- no reason to download the same clip twice.
+      let blob = await audioCache.get(this.track).catch(() => null);
+      if (!blob) {
+        const r = await fetch(audioUrlFor(this.track, this.secret));
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        blob = await r.blob();
+      }
+      await audioCache.undismiss(this.track);
+      await audioCache.put(this.track, blob, { pinned: true });
+      this.saved = true;
+      this._emit("saved", { bytes: blob.size, pinned: true });
     } catch (e) {
       this._emit("saved", { error: String(e.message || e) });
     } finally {
@@ -395,9 +477,12 @@ class Player extends EventTarget {
       this._repaint();
     }
   }
+
+  /** Remove the offline copy AND mark it as not-wanted, so auto-caching respects it. */
   async unsave() {
     if (!this.track) return;
-    await audioCache.del(this.track).catch(() => {});
+    await audioCache.dismiss(this.track).catch(() => {});
+    this.saved = false;
     this._emit("saved", { removed: true });
     this._repaint();
   }

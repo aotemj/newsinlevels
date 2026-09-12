@@ -11,7 +11,7 @@
 // Bump on every shell change: `activate` drops caches that do not start with the
 // current VERSION, so an installed PWA picks the new assets up on next launch
 // instead of serving one stale load first.
-const VERSION = "nil-v8";
+const VERSION = "nil-v9";
 const SHELL = `${VERSION}-shell`;
 const DATA = `${VERSION}-data`;
 const IMG = `${VERSION}-img`;

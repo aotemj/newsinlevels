@@ -216,6 +216,43 @@ let started = false;
       pl.querySelector('[data-a="segloop"]').disabled);
     note('player.setup_hint', (pl.querySelector('.pnote') || {}).textContent?.trim().slice(0, 90));
 
+    // ---------- offline audio cache (automatic now, so its limits matter)
+    const N = w.__nil;
+    const ac = N.audioCache;
+    const mk = (n) => new Blob([new Uint8Array(n)], { type: 'audio/mpeg' });
+    note('audio.cache_default_on', N.settings.cacheAudio === true);
+    await ac.clear(); ac.clearDismissed();
+
+    await ac.put('ev-old', mk(1000));
+    await ac.put('ev-keep', mk(1000), { pinned: true });
+    await ac.put('ev-new', mk(1000));
+    const cap = await ac.enforceCap(2500);          // room for two of the three
+    note('audio.evicts_lru_unpinned',
+      (await ac.has('ev-old')) === false && (await ac.has('ev-new')) === true);
+    note('audio.evicts_skips_pinned', await ac.has('ev-keep'));
+    note('audio.enforceCap_report', cap);
+    // NB: compare against the CHILD window's Blob. Each frame has its own realm and
+    // `instanceof` across two realms is always false, which made this look like a bug
+    // in the store when it was a bug in the test.
+    note('audio.get_returns_blob', (await ac.get('ev-keep')) instanceof w.Blob);
+
+    // An explicit removal must survive: auto-caching putting it straight back would
+    // make the button look broken.
+    await ac.dismiss('ev-new');
+    note('audio.dismiss_removes', (await ac.has('ev-new')) === false);
+    note('audio.dismiss_is_remembered', ac.isDismissed('ev-new') === true);
+    note('audio.auto_cache_respects_dismissal',
+      (await N.player._autoCache('ev-new', mk(10))) === false);
+
+    // ...and the automatic path does store a fresh clip
+    note('audio.auto_cache_stores', (await N.player._autoCache('ev-fresh', mk(1234))) === true);
+    note('audio.auto_cache_size', (await ac.meta('ev-fresh')).blob && (await ac.meta('ev-fresh')).blob.size);
+    note('audio.stats', await ac.stats());
+
+    ac.clearDismissed();
+    const cleared = await ac.clear();
+    note('audio.clear_empties_the_store', cleared >= 1 && (await ac.stats()).count === 0);
+
     // ---------- word sheet
     const bold = d.querySelector('#reader-body .article strong.w');
     if (bold) {
