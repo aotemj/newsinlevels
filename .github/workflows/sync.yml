@@ -59,14 +59,13 @@ jobs:
           print(f"baked at: {i['generated']}")
           PY
 
-  # Publish the refreshed data to Cloudflare Pages.
+  # Confirm the refreshed data actually reached the site.
   #
-  # This is a separate job calling the shared workflow rather than relying on the
-  # push above to trigger deploy-pages.yml: the commit is made with the default
-  # GITHUB_TOKEN, and GitHub deliberately does not let such a push fire another
-  # workflow. Without this the site would keep serving yesterday's data every
-  # morning while the repository showed today's.
-  deploy:
+  # Cloudflare Pages deploys from this repository by itself, so there is nothing to
+  # upload here. The call is not redundant though: the sync commits with the default
+  # GITHUB_TOKEN, and GitHub deliberately does not let such a push trigger another
+  # workflow, so without it a silently failed Cloudflare build would go unnoticed
+  # until someone happened to load the app.
+  verify:
     needs: sync
-    uses: ./.github/workflows/deploy-pages.yml
-    secrets: inherit
+    uses: ./.github/workflows/verify-pages.yml

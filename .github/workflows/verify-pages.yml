@@ -1,0 +1,54 @@
+name: verify pages
+
+# Deploying is Cloudflare's job: the Pages project is connected to this repository,
+# so Cloudflare builds and publishes on push -- including the daily data commit,
+# which a GitHub workflow could not react to anyway (a push made with the default
+# GITHUB_TOKEN does not trigger another workflow).
+#
+# What is still worth having is the proof that the deploy took effect. "The build
+# went green" and "the site now serves this build" are different claims, and a
+# silent no-op deploy looks exactly like a success -- which has already cost real
+# time here. This needs no credentials at all.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  # override with a repository variable if the project is ever renamed
+  PAGES_URL: ${{ vars.PAGES_URL || 'https://nil-audio.pages.dev' }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cloudflare's build runs in parallel with this, so poll rather than sleeping
+      # a guessed interval. ~8 minutes of patience covers a cold build; the loop
+      # exits the moment the site agrees, usually well before that.
+      - name: Wait for the deployed build to match the repository
+        run: |
+          set -eu
+          want=$(sed -n 's/.*export const BUILD = "\([^"]*\)".*/\1/p' docs/config.js)
+          echo "docs/config.js says: $want"
+          if [ -z "$want" ]; then echo "::error::no BUILD found in docs/config.js"; exit 1; fi
+          for i in $(seq 1 24); do
+            got=$(curl -fsS --max-time 20 "$PAGES_URL/version.json?t=$RANDOM" 2>/dev/null \
+                  | sed -n 's/.*"build": *"\([^"]*\)".*/\1/p' || true)
+            echo "attempt $i: server says ${got:-<no answer>}"
+            if [ "${got:-}" = "$want" ]; then
+              echo "OK: $PAGES_URL is serving $want"
+              echo "--- /health"
+              curl -fsS --max-time 20 "$PAGES_URL/health" || true
+              echo
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::the site never served $want. If Cloudflare's build failed, look at the Pages project's build log — a wrong deploy command (for example wrangler deploy instead of wrangler pages deploy, or a missing build output directory) fails THERE, and this check can only report the symptom."
+          exit 1

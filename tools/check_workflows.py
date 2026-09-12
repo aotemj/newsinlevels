@@ -110,15 +110,16 @@ vj = json.load(open(os.path.join(ROOT, "docs", "version.json"), encoding="utf-8"
 (ok if vj.get("build") == want else bad)(
     f"version.json build={vj.get('build')!r} vs config.js {want!r}")
 
-print("=== secret names used by workflows match the README ===")
-# A secret is created by hand in GitHub, so a rename in the workflow cannot be
-# verified there -- but it CAN be checked that the docs still name the same one.
-# Drift here means someone follows the README and the run still says "Not logged in".
+print("=== secrets referenced by workflows ===")
+# No secrets are required any more: Cloudflare Pages deploys from the repository
+# itself, and the verification workflow only reads the public site. Report what is
+# referenced, and if any secret is used, check the README still names it -- a
+# rename in one place and not the other is how "I followed the README and it still
+# says Not logged in" happens.
 readme = ""
-for candidate in ("README.md",):
-    p = os.path.join(ROOT, candidate)
-    if os.path.exists(p):
-        readme = open(p, encoding="utf-8").read()
+p = os.path.join(ROOT, "README.md")
+if os.path.exists(p):
+    readme = open(p, encoding="utf-8").read()
 used = set()
 for name in sorted(os.listdir(WF)):
     if name.endswith((".yml", ".yaml")):
@@ -126,7 +127,7 @@ for name in sorted(os.listdir(WF)):
                                open(os.path.join(WF, name), encoding="utf-8").read()))
 used.discard("GITHUB_TOKEN")
 if not used:
-    bad("no secrets.* references found — the deploy cannot authenticate")
+    ok("none required — Cloudflare builds from the repository, no token needed")
 for s in sorted(used):
     (ok if s in readme else bad)(f"{s} referenced in a workflow and documented: {s in readme}")
 
