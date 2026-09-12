@@ -11,7 +11,7 @@
 // Bump on every shell change: `activate` drops caches that do not start with the
 // current VERSION, so an installed PWA picks the new assets up on next launch
 // instead of serving one stale load first.
-const VERSION = "nil-v6";
+const VERSION = "nil-v7";
 const SHELL = `${VERSION}-shell`;
 const DATA = `${VERSION}-data`;
 const IMG = `${VERSION}-img`;
@@ -58,6 +58,11 @@ self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
+
+  // version.json must always come from the network: it is how the page discovers
+  // that this worker is serving a stale shell. Caching it would blind the check.
+  // Returning without respondWith() lets the browser handle it normally.
+  if (url.pathname.endsWith("version.json")) return;
 
   // navigations: cached shell, refreshed in the background
   if (req.mode === "navigate") {

@@ -108,8 +108,34 @@ const ICON = {
   fwd: '<svg viewBox="0 0 24 24"><path d="M13 5l7 7-7 7M4 12h16"/></svg>',
   repeat: '<svg viewBox="0 0 24 24"><path d="M17 2l4 4-4 4"/><path d="M3 12V10a4 4 0 014-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 12v2a4 4 0 01-4 4H3"/></svg>',
   down: '<svg viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg>',
+  chevUp: '<svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>',
+  chevDown: '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>',
   trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>',
 };
+
+/* --------------------------------------------------------------- playback speed */
+
+/** Clicking the rate button cycles these. Fixed presets beat a slider here: one
+ *  tap is unambiguous, and none of these are reachable by accident. */
+const RATES = [0.75, 1, 1.25, 1.5, 2];
+const RATE_DEFAULT = 1;
+
+/**
+ * Snap a stored value onto the nearest preset. Older builds shipped a slider with
+ * `|| 0.9` as the default and 0.05 steps, so a saved 0.9 (or anything else off the
+ * list) has to land on a preset or the button would read a value it cannot cycle to.
+ */
+export const nearestRate = (v) => {
+  const n = Number(v);
+  if (!isFinite(n) || n <= 0) return RATE_DEFAULT;
+  return RATES.reduce((best, r) => (Math.abs(r - n) < Math.abs(best - n) ? r : best), RATES[0]);
+};
+
+/** The preset after the current one, wrapping. */
+export const nextRate = (v) => RATES[(RATES.indexOf(nearestRate(v)) + 1) % RATES.length];
+
+/** "1×", "0.75×", "1.25×" -- no trailing zeros. */
+export const rateLabel = (v) => `${nearestRate(v)}×`;
 
 class Player extends EventTarget {
   constructor() {
@@ -135,6 +161,15 @@ class Player extends EventTarget {
     this.busy = null;
     this.blobUrl = null;
     this.wantPlay = false;
+    // The controls start folded away: expanded by default they sat on top of the
+    // last lines of every article. Collapsed, only a slim row shows and nothing is
+    // covered; expanding is a deliberate tap and overlays the article rather than
+    // reflowing it, so the text never jumps.
+    this.collapsed = true;
+    // Escape folds it back on desktop. Bound once on the singleton, not per repaint.
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !this.collapsed) this.setCollapsed(true);
+    });
     this._wire();
   }
 
@@ -194,6 +229,7 @@ class Player extends EventTarget {
     this.segError = null;
     this.loopIndex = -1; this.shadowIndex = -1;
     this.ab = null; this.shadowReps = 0;
+    this.collapsed = true;      // a new story opens with the controls folded away
     this._revoke();
 
     // offline copy wins over the network
@@ -205,7 +241,10 @@ class Player extends EventTarget {
     if (!src) src = audioUrlFor(track, secret);
 
     this.audio.src = src;
-    this.audio.playbackRate = Number(settings.rate) || 0.9;
+    // Snap a stored value onto a preset: the old slider allowed 0.05 steps and
+    // defaulted to 0.9, neither of which the cycler can reach.
+    this.audio.playbackRate = nearestRate(settings.rate);
+    settings.rate = this.audio.playbackRate;
     this._repaint();
     if (autoplay) this.play();
 
@@ -291,12 +330,29 @@ class Player extends EventTarget {
     this.audio.currentTime = clamp(t, 0, this.audio.duration || t);
     if (!keepPaused) this._repaint();
   }
+  /** Accepts a preset or anything else; anything else snaps to the nearest preset. */
   setRate(r) {
-    r = Math.round(clamp(Number(r) || 1, 0.5, 1.5) / 0.05) * 0.05;
-    this.audio.playbackRate = r;
-    settings.rate = r;
+    const v = nearestRate(r);
+    this.audio.playbackRate = v;
+    settings.rate = v;
     this._repaint();
   }
+
+  /** One tap of the rate button: 0.75 -> 1 -> 1.25 -> 1.5 -> 2 -> 0.75. */
+  cycleRate() {
+    this.setRate(nextRate(this.audio.playbackRate));
+    this._emit("rate", { rate: this.audio.playbackRate });
+  }
+
+  /** Fold the controls away, or bring them back. */
+  setCollapsed(v) {
+    const next = !!v;
+    if (this.collapsed === next) return;
+    this.collapsed = next;
+    this._repaint();
+    this._emit("collapsed", { collapsed: this.collapsed });
+  }
+  toggleCollapsed() { this.setCollapsed(!this.collapsed); }
 
   /** Jump to a sentence and (optionally) keep looping just that sentence. */
   goto(index, { loop = false } = {}) {
@@ -470,7 +526,28 @@ class Player extends EventTarget {
     const rate = a.playbackRate || 1;
     const saved = this.saved;
 
-    this.el.innerHTML = `
+    this.el.classList.toggle("collapsed", this.collapsed);
+
+    // Collapsed: one slim row above the tabs -- play/pause, times, a 2px progress
+    // line, and the chevron. Deliberately NOT the full panel, which used to sit on
+    // the last lines of every article. The `.now` / [data-t] hooks are the same
+    // ones _paintNow() already drives, so the progress line and times stay live
+    // without a per-tick repaint of the whole panel.
+    const collapsedRow = `
+      <div class="pbar" data-a="bar">
+        <button class="pbtn primary" data-a="toggle" aria-label="Play or pause">
+          ${a.paused ? ICON.play : ICON.pause}
+        </button>
+        <span class="ptime" data-t="now">${fmt(t)}</span>
+        <span class="ptime dim">/</span>
+        <span class="ptime" data-t="dur">${fmt(d)}</span>
+        <div class="minitrack"><div class="now"></div></div>
+        ${this.busy ? `<span class="ptime busy" title="${esc(this.busy)}">⋯</span>` : ""}
+        <button class="pbtn chev" data-a="togglecollapse" aria-expanded="false"
+                aria-label="Show player controls">${ICON.chevUp}</button>
+      </div>`;
+
+    const expandedPanel = `
       <div class="prow">
         <button class="pbtn" data-a="prev" ${seg ? "" : "disabled"} aria-label="Previous sentence">${ICON.prev}</button>
         <button class="pbtn primary" data-a="toggle" aria-label="Play or pause">
@@ -490,11 +567,8 @@ class Player extends EventTarget {
         <span class="ptime" data-t="dur">${fmt(d)}</span>
       </div>
       <div class="prow2">
-        <div class="rate-wrap">
-          <span class="ptime">${rate.toFixed(2)}×</span>
-          <input type="range" min="0.5" max="1.5" step="0.05" value="${rate}" data-a="rate"
-                 aria-label="Playback speed">
-        </div>
+        <button class="pill-btn rate-btn" data-a="rate" aria-label="Playback speed"
+                title="Speed ${rateLabel(rate)} — tap to change">${rateLabel(rate)}</button>
         <button class="pill-btn" data-a="clip" aria-pressed="${this.loopClip}">Loop clip</button>
         <button class="pill-btn" data-a="segloop" ${seg ? "" : "disabled"}
                 aria-pressed="${this.loopSentence}" title="Repeat the current sentence">Sentence</button>
@@ -506,10 +580,13 @@ class Player extends EventTarget {
                 title="Recompute sentence timings">${this.busy ? "…" : "⟳"}</button>
         <button class="pill-btn" data-a="save">${ICON.down}</button>
         ${saved ? `<button class="pill-btn warn" data-a="unsave">${ICON.trash}</button>` : ""}
+        <button class="pbtn chev" data-a="togglecollapse" aria-expanded="true"
+                aria-label="Hide player controls">${ICON.chevDown}</button>
       </div>
       ${this.busy ? `<div class="pstatus">${this.busy}…</div>` : ""}
-      ${this._statusLine()}
-    `;
+      ${this._statusLine()}`;
+
+    this.el.innerHTML = this.collapsed ? collapsedRow : expandedPanel;
     this._bind();
     this._paintNow();
     this._paintBuffer();
@@ -569,7 +646,14 @@ class Player extends EventTarget {
       } else if (this.shadowTimer) { clearTimeout(this.shadowTimer); this.shadowTimer = null; }
       this._repaint();
     });
-    on('[data-a="rate"]', "input", (e) => this.setRate(e.target.value));
+    on('[data-a="rate"]', "click", () => this.cycleRate());
+    on('[data-a="togglecollapse"]', "click", () => this.toggleCollapsed());
+    // Tapping the folded bar brings the controls back, but a click on one of its
+    // own buttons (play/pause) must not also expand it.
+    on('[data-a="bar"]', "click", (e) => {
+      if (e.target.closest("button")) return;
+      this.setCollapsed(false);
+    });
     on('[data-a="ab"]', "click", () => {
       const t = this.audio.currentTime;
       if (!this.ab) this.setAB(t, null);
