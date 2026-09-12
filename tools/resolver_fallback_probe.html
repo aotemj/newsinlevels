@@ -48,6 +48,21 @@ frame.src = './index.html';
     // build stamp is what makes that answerable, so assert it is present.
     check('the app reports which build it is running', /^nil-v\d+$/.test(String(N.build)), N.build);
 
+    // The build is named in three files. If they drift, the self-repair loop either
+    // never fires or fires forever -- so assert they agree rather than trusting that
+    // whoever bumps one remembers the other two.
+    try {
+      const vj = await fetch('./version.json?t=' + Date.now(), { cache: 'no-store' }).then(r => r.json());
+      const swTxt = await fetch('./sw.js', { cache: 'no-store' }).then(r => r.text());
+      const swVer = (swTxt.match(/VERSION = "([^"]+)"/) || [])[1];
+      note('build_stamps', { app: N.build, version_json: vj.build, sw: swVer });
+      check('config.js, version.json and sw.js name the SAME build',
+            N.build === vj.build && N.build === swVer,
+            `${N.build} / ${vj.build} / ${swVer}`);
+    } catch (e) {
+      check('build stamps readable', false, String(e && e.message || e));
+    }
+
     if (all.length < 2) {
       note('SKIP', 'need 2+ bases in WORKER_BASES to exercise the walk');
     } else {

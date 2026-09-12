@@ -10,7 +10,9 @@ const write = (k, v) => { try { localStorage.setItem(LS + k, JSON.stringify(v));
 /* ------------------------------------------------------------------ settings */
 const DEFAULTS = {
   theme: "auto",          // auto | light | dark
-  rate: 0.9,              // playback speed, learners benefit from < 1
+  rate: 1,                // playback speed; must be one of the presets the rate
+                          // button cycles (0.75/1/1.25/1.5/2), since that button
+                          // cannot step to a value off the grid
   gap: 1.6,               // seconds of silence in shadowing mode
   reps: 2,                // how many times a sentence is read in shadowing mode
   size: 18,               // reader font size

@@ -174,6 +174,11 @@ let started = false;
       audio.pause();
     }
 
+    // The probe wipes the Chrome profile, so this is a genuinely fresh install:
+    // the stored default must be a preset the button can cycle (it used to be 0.9,
+    // which the old slider could reach but the cycler cannot).
+    note('player.rate_default_is_1', audio.playbackRate === 1, audio.playbackRate);
+
     // Rate is a preset cycler now: one tap moves to the next preset and wraps.
     // Asserted relative to wherever it started, because the stored value comes from
     // localStorage and the old build could have saved anything on the 0.05 grid.
