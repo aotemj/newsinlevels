@@ -54,6 +54,17 @@ export const WORKER_BASE = WORKER_BASES[0];
 export const AUDIO_MODE = "stream";
 
 /**
+ * Build stamp. Shown in the setup sheet, in the Test report, and on __nil.build.
+ *
+ * Why it exists: a stale service-worker cache once left a phone running a MIXED
+ * shell -- a new player.js alongside an old segment.js -- and the only clue was a
+ * line number in a console stack trace. That is far too expensive to diagnose, so
+ * the app now states which build it is. BUMP THIS with sw.js VERSION on every
+ * shell change; the two are the same build.
+ */
+export const BUILD = "nil-v6";
+
+/**
  * Fallback used when no resolver is configured: the public podcast feed mp3.
  * NOTE: feeds.soundcloud.com is itself blocked in mainland China, so this path
  * only works outside it.

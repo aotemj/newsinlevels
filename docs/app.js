@@ -1,7 +1,7 @@
 /** Reader: everything in one place. */
 import { settings, favorites, progress, vocab, audioCache, segCache } from "./store.js";
 import { player, hasCors, workerBase, advanceResolver, resolverState, audioMode, audioUrlFor, OFF } from "./player.js";
-import { WORKER_BASE } from "./config.js";
+import { WORKER_BASE, BUILD } from "./config.js";
 
 /* ------------------------------------------------------------------ helpers */
 const $ = (s, r = document) => r.querySelector(s);
@@ -553,7 +553,7 @@ function openSetup() {
   back.addEventListener("click", close);
 
   sheet.innerHTML = `
-    <h3>Audio resolver</h3>
+    <h3>Audio resolver <code style="font-size:11px;opacity:.6">${esc(BUILD)}</code></h3>
     <p class="def">Paste the URL printed by <code>npx wrangler pages deploy</code> (or
       <code>wrangler deploy</code>). It resolves each clip to a playable mp3 and adds the
       CORS header that sentence timings need.
@@ -652,6 +652,7 @@ function openSetup() {
     const rs = resolverState();
     log.push(`5. using ${rs.current} in "${rs.mode}" mode — timings: ${why || "ready"}`);
     log.push(`   attempt ${rs.index + 1}/${rs.attempts.length}: ${rs.attempts.join(" | ")}`);
+    log.push(`6. build ${BUILD}`);
     stat(log.join("\n"));
   });
   sheet.querySelector("#wauto").addEventListener("click", (e) => {
@@ -719,6 +720,7 @@ try {
 // Debug handle: the app is meant to be poked at from a device console and from
 // the headless smoke tests, so the internals are exposed on purpose.
 window.__nil = { player, settings, favorites, progress, vocab, audioCache, segCache,
+  build: BUILD,
   route: () => route, current: () => current, index: () => INDEX,
   // Reachable from the device console: __nil.resolver.state() answers "which
   // resolver am I on, in which mode, and what has already failed" on a phone with
@@ -741,7 +743,21 @@ loadIndex().then(() => {
 });
 
 if ("serviceWorker" in navigator) {
+  // Shell assets are served cache-first, so a new build only lands on the NEXT
+  // open -- and if the worker itself lags, the page can run a MIX of old and new
+  // files (seen for real: a new player.js with an old segment.js, so the caller
+  // waited for a flag the old fetch never set). Ask for an update on every launch
+  // and reload once when a new worker takes over, so the shell moves as a unit.
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController || reloaded) return;   // first install: nothing to replace
+    reloaded = true;
+    location.reload();
+  });
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
+    navigator.serviceWorker.register("sw.js")
+      .then((reg) => reg.update().catch(() => {}))
+      .catch(() => {});
   });
 }

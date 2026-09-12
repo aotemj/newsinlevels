@@ -151,13 +151,27 @@ export default {
           // rather than buffering it (clips are small, but this keeps memory flat
           // and starts playback immediately).
           const range = request.headers.get('Range');
-          const upstream = await fetch(url, {
-            headers: range ? { Range: range } : {},
-            redirect: 'follow',
-          });
-          if (!upstream.ok && upstream.status !== 206) {
-            throw new Error(`upstream ${upstream.status}`);
+          // A 403 does not necessarily mean a bad signature. The CDN edge can hold
+          // a cached error object for one transcoding path -- observed as a 10-byte
+          // "Forbidden" with `age: 52887` at x-amz-cf-pop LAX54-P3 -- while the same
+          // clip fetches fine via another. The resolve api returns a fresh object
+          // path on every call, so re-resolve and retry before giving up.
+          let upstream = null;
+          let lastStatus = 0;
+          let href = url;
+          for (let i = 0; i < 3; i++) {
+            const r = await fetch(href, {
+              headers: range ? { Range: range } : {},
+              redirect: 'follow',
+            });
+            if (r.ok || r.status === 206) { upstream = r; break; }
+            lastStatus = r.status;
+            try { await r.body.cancel(); } catch { /* already consumed */ }
+            if (r.status !== 403 && r.status !== 404) break;
+            const again = await resolveTrack(trackId, secret, await clientId(false));
+            href = again.url;
           }
+          if (!upstream) throw new Error(`upstream ${lastStatus}`);
           const h = new Headers(CORS);
           h.set('Content-Type', upstream.headers.get('Content-Type') || 'audio/mpeg');
           h.set('Accept-Ranges', 'bytes');
