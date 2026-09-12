@@ -10,7 +10,7 @@
 import { settings } from "./store.js";
 import { audioCache, segCache } from "./store.js";
 import { segmentUrl } from "./segment.js";
-import { WORKER_BASES, PODCAST_BASE } from "./config.js";
+import { WORKER_BASES, PODCAST_BASE, AUDIO_MODE } from "./config.js";
 
 /** Sentinel meaning "explicitly run without a resolver, even if one is configured". */
 export const OFF = "__off__";
@@ -30,42 +30,63 @@ const esc = (s) => String(s).replace(/[&<>"]/g,
 
 const stripSlash = (u) => String(u || "").replace(/\/+$/, "");
 
-// Resolver bases that have already failed us, shared by the <audio> element AND
-// the sentence-timing fetch.  Originally only the audio path advanced, so a dead
-// first base still played (after a retry) while the timings stayed permanently
-// missing -- and the toast then blamed the Worker, which was installed and fine.
-const failedBases = new Set();
+// Delivery attempts, in order: every base with every mode.
+//
+// Two independent things can fail, and conflating them was a bug:
+//   * the base host is unreachable (workers.dev is DNS-poisoned in China), and
+//   * the base answers but the bytes it points at are not usable here (the
+//     client's route to cf-media.sndcdn.com can return a cached 403 even though
+//     the signed url is valid -- proven by fetching the same url from Cloudflare
+//     and getting 206 audio/mpeg).
+// So the walk is base x mode, and both the <audio> element and the sentence
+// timing fetch share it.  Previously only the audio element advanced, so the
+// timings stayed permanently missing with nothing recording why.
+let _cacheKey = null;
+let _attempts = [];
+let attemptIdx = 0;
 
-export const workerBase = () => {
+function attemptList() {
   const s = settings.worker || "";
-  if (s === OFF) return "";                 // "run without a resolver" on purpose
-  if (s) return stripSlash(s);
-  const list = WORKER_BASES.filter(Boolean).map(stripSlash);
-  const usable = list.find((b) => !failedBases.has(b));
-  // When every base has failed, keep returning the last one: retrying a known-bad
-  // host is better than disabling playback, and markBaseFailed() still reports
-  // "nothing left" so no caller can loop on it.
-  return usable || list[list.length - 1] || "";
+  if (s === OFF) return [];
+  const bases = (s ? [s] : WORKER_BASES).filter(Boolean).map(stripSlash);
+  const modes = AUDIO_MODE === "redirect" ? ["redirect", "stream"] : ["stream", "redirect"];
+  const key = bases.join("|");
+  if (key !== _cacheKey) {
+    // settings changed (e.g. the user saved a new base) -- start over
+    _cacheKey = key;
+    _attempts = [];
+    attemptIdx = 0;
+    for (const b of bases) for (const m of modes) _attempts.push({ base: b, mode: m });
+  }
+  return _attempts;
+}
+
+const attempt = () => {
+  const l = attemptList();
+  return l[Math.min(attemptIdx, l.length - 1)] || { base: "", mode: AUDIO_MODE };
 };
+
+export const workerBase = () => attempt().base;
+/** "stream" (bytes proxied through Cloudflare) or "redirect" (302 to the CDN). */
+export const audioMode = () => attempt().mode;
 
 /**
- * Record that the current base failed, so the next workerBase() call moves on.
- * Returns true only when an untried base remains -- so callers can use it as a
- * one-shot retry guard.  Idempotent per base, which matters because the audio
- * element and the timings fetch can both fail on the same base at once.
+ * Give up on the current base+mode and move to the next attempt.  Returns true
+ * only while an untried attempt remains, which bounds every caller's retry.
  */
-export const markBaseFailed = () => {
-  if (settings.worker) return false;        // an explicit choice is not second-guessed
-  const cur = workerBase();
-  if (!cur) return false;
-  failedBases.add(cur);
-  return WORKER_BASES.filter(Boolean).map(stripSlash).some((b) => !failedBases.has(b));
+export const advanceResolver = () => {
+  const l = attemptList();
+  if (attemptIdx >= l.length - 1) return false;
+  attemptIdx += 1;
+  return true;
 };
 
-/** For diagnostics: what has been tried. */
+/** For diagnostics and the setup sheet. */
 export const resolverState = () => ({
   current: workerBase(),
-  failed: [...failedBases],
+  mode: audioMode(),
+  index: attemptIdx,
+  attempts: attemptList().map((a) => `${a.base || "(none)"} / ${a.mode}`),
   all: WORKER_BASES.filter(Boolean).map(stripSlash),
 });
 
@@ -73,8 +94,9 @@ export const hasCors = () => !!workerBase();
 
 export function audioUrlFor(track, secret) {
   const base = workerBase();
-  if (base) return `${base}/audio/${track}${secret ? `?s=${encodeURIComponent(secret)}` : ""}`;
-  return `${PODCAST_BASE}/${track}-newsinlevels-x.mp3`;
+  if (!base) return `${PODCAST_BASE}/${track}-newsinlevels-x.mp3`;
+  const path = audioMode() === "redirect" ? "audio" : "stream";
+  return `${base}/${path}/${track}${secret ? `?s=${encodeURIComponent(secret)}` : ""}`;
 }
 
 const ICON = {
@@ -137,14 +159,16 @@ class Player extends EventTarget {
   }
 
   _fail() {
-    // An unreachable resolver host fails right here -- in mainland China
-    // workers.dev is DNS-poisoned while pages.dev is not.  Step to the next
-    // configured base and retry before reporting anything to the user.
-    if (!this.blobUrl && this.track && markBaseFailed()) {
+    // An unusable delivery route fails right here: the base can be unreachable
+    // (workers.dev is DNS-poisoned in China) or reachable but pointing at bytes
+    // this network cannot get (cf-media hanging the client a cached 403).  Both
+    // look like a media error, so step to the next attempt and retry before
+    // reporting anything to the user.
+    if (!this.blobUrl && this.track && advanceResolver()) {
       this.audio.src = audioUrlFor(this.track, this.secret);
       this.audio.load();
       this._repaint();
-      this._emit("resolver-switch", { base: workerBase() });
+      this._emit("resolver-switch", { base: workerBase(), mode: audioMode() });
       if (this.wantPlay) this.play();
       return;
     }
@@ -213,10 +237,11 @@ class Player extends EventTarget {
           this._applySegments(res, false);
           return res;
         } catch (e) {
-          // This fetch is its own request, so a base the client cannot reach fails
-          // here independently of the <audio> element.  Retry once on the next base
-          // instead of leaving the timings permanently missing.
-          if (attempt === 0 && markBaseFailed()) continue;
+          // This fetch is its own request, so an unusable delivery route fails
+          // here independently of the <audio> element.  Walk the remaining
+          // attempts instead of leaving the timings permanently missing -- but
+          // only when the bytes never arrived, never for an alignment failure.
+          if (e && e.delivery && advanceResolver()) continue;
           throw e;
         }
       }
