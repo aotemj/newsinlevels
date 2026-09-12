@@ -43,6 +43,10 @@ frame.src = './index.html';
   try {
     const all = res.state().all;
     note('configured_bases', all);
+    // A stale service-worker cache once left a phone on a MIXED shell (new
+    // player.js, old segment.js) with only a console line number to go on. The
+    // build stamp is what makes that answerable, so assert it is present.
+    check('the app reports which build it is running', /^nil-v\d+$/.test(String(N.build)), N.build);
 
     if (all.length < 2) {
       note('SKIP', 'need 2+ bases in WORKER_BASES to exercise the walk');

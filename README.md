@@ -112,6 +112,16 @@ npx wrangler pages deploy   # 在仓库根目录运行（读根目录的 wrangle
 > `worker/index.js` 同一份实现。App 会按 base × mode 顺序逐个尝试（列表见 `config.js` 的
 > `WORKER_BASES` 与 `AUDIO_MODE`），任何一个不可用都只会浪费一次尝试，不会让播放器死掉。
 
+#### 怎么知道手机上跑的是哪一版
+
+打开 **setup**，标题右边就是构建号（`nil-v6` 这种）；也可以按 F12 在控制台执行 `__nil.build`。
+这个标识是为了回答一个具体踩过的坑：Service Worker 的缓存曾让手机跑**混版**客户端
+（新的 `player.js` 配旧的 `segment.js`），当时只能靠控制台堆栈里的行号去反推版本 —— 太贵了。
+改动 shell 时 `config.js` 的 `BUILD` 要和 `sw.js` 的 `VERSION` 一起递增。
+
+`app.js` 现在每次启动都会 `registration.update()`，并在**新 worker 接管时自动重载一次**，
+让整个 shell 一起更新，而不是一次只换几个文件。
+
 #### 两种交付方式
 
 - `/stream/<id>` —— **默认**。解析器取到签名地址后**代为取字节**并转发给你，`Range` 一并转发。
