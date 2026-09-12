@@ -110,28 +110,43 @@ npx wrangler pages deploy   # 一般不需要手敲，见下
 
 #### 自动部署（不用再手敲那条命令）
 
-`.github/workflows/deploy-pages.yml` 会在**推送到 main** 时自动部署，也可以从 Actions 页
-手动触发。它最后会**校验线上构建号和仓库里的一致**才判定成功 —— 因为"部署步骤退出码 0"
-和"站点真的换版了"是两件事，而静默失败的部署看起来和成功一模一样。
+**Cloudflare 的 Git 集成负责部署** —— Pages 项目连上本仓库后，推送到 main 就会自动构建并发布，
+**包括每日同步的数据提交**，而且不需要任何 token。
 
-需要在仓库里加**两个 Secret**（Settings → Secrets and variables → Actions）：
+Pages 项目的构建配置必须是（这是踩过的坑）：
 
-| Secret | 值 |
+| 字段 | 值 |
 |---|---|
-| `CLOUDFLARE_API_TOKEN` | 在 <https://dash.cloudflare.com/profile/api-tokens> 建一个 **Custom token**，权限选 **Account → Cloudflare Pages → Edit** |
-| `CLOUDFLARE_ACCOUNT_ID` | 控制台右侧栏的 account id |
+| Framework preset | **None** |
+| Build command | **留空** |
+| **Build output directory** | **`docs`** |
+| Root directory | `/` |
+| （若有）**Deploy command** | **`npx wrangler pages deploy`** |
 
-> 注意：模板 "Edit Cloudflare Workers" **不包含 Pages 权限**，所以要用 Custom token。
-> 如果你还想让 `cd worker && wrangler deploy` 也走 CI，再加 **Account → Workers Scripts → Edit**。
+> **不要把 Deploy command 填成 `npx wrangler deploy`** —— 那是 Workers 的命令，Pages 项目会
+> 在构建日志里这样失败（wrangler 自己也会先警告）：
+> `▲ [WARNING] It seems that you have run `wrangler deploy` on a Pages project`
+> `✘ [ERROR] Missing entry-point to Worker script or to assets directory`
+> `functions/` 目录由 Pages 自动识别，不需要配置。
 
-**为什么 `sync.yml` 里也有一份部署步骤**：每日同步是用默认的 `GITHUB_TOKEN` 提交的，而
-GitHub **不会**让这种提交触发其它 workflow（防递归）。如果只靠 push 触发，数据每天更新、
-线上却一直停在昨天。所以 sync 是**直接调用**同一个 workflow（`workflow_call`），实现只有一份。
+#### 部署校验（不需要任何凭据）
+
+`.github/workflows/verify-pages.yml` 在推送后轮询线上 `/version.json`，直到它与仓库里
+`docs/config.js` 的 `BUILD` 一致才判定成功 —— 因为"构建日志是绿的"和"站点真的换版了"是两件事，
+**静默失败的部署看起来和成功一模一样**（这个坑本项目真吃过一次）。
+
+`sync.yml` 也会调用它：每日同步是用默认 `GITHUB_TOKEN` 提交的，而 GitHub **不允许**这种提交
+触发其它 workflow，所以不显式调用的话，Cloudflare 那边的构建悄悄失败也不会有人知道。
+
+> 想改回"由 GitHub Action 部署"也可以：需要 `CLOUDFLARE_API_TOKEN`（Custom token，权限
+> **Account → Cloudflare Pages → Edit**）和 `CLOUDFLARE_ACCOUNT_ID` 两个 Secret。用 Git 集成
+> 就不用折腾这些。
 
 改完 workflow 本地就能验证，不必等 Actions 变红：
 
 ```bash
 python tools/check_workflows.py     # YAML、uses: 指向、构建号一致性
+python tools/check_cloudflare_token.sh   # 只在你要用 token 部署时才需要
 ```
 
 
