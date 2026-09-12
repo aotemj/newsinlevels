@@ -21,6 +21,7 @@ const DEFAULTS = {
   cat: "",                // "" = all categories
   worker: "",             // overrides config.WORKER_BASE
   autoSeg: true,          // compute sentence timings on open
+  cacheAudio: true,       // keep every clip you play for offline use
 };
 
 export const settings = new Proxy({}, {
@@ -161,17 +162,112 @@ export const segCache = {
   put: (track, v) => put("kv", `seg:${track}`, v),
 };
 
-/** Downloaded audio, so playback works with no network. */
+/* --------------------------------------------------------------- audio cache */
+
+// Downloads are automatic now: a clip you have listened to once keeps working with
+// no network. That makes unbounded growth a real risk (roughly 1 MB per level of a
+// story), so records carry a timestamp and are evicted least-recently-USED past a
+// byte cap.
+//
+// Record shape is { blob, at, pinned }. A bare Blob is what older builds wrote for
+// a manual save, and is treated as pinned -- an offline library someone built by
+// hand must not be the first thing evicted.
+const AUDIO_CAP_BYTES = 150 * 1024 * 1024;
+const DISMISSED_KEY = "audioOff";
+const DISMISSED_MAX = 400;
+
+const asRecord = (r) => (!r ? null : (r.blob ? r : { blob: r, at: 0, pinned: true }));
+
 export const audioCache = {
   keys: () => keys("blob"),
-  get: (track) => get("blob", track),
-  put: (track, blob) => put("blob", track, blob),
+
+  async get(track) {
+    const r = asRecord(await get("blob", track));
+    if (!r) return null;
+    if (!r.pinned) put("blob", track, { ...r, at: Date.now() }).catch(() => {});
+    return r.blob;
+  },
+
+  meta: async (track) => asRecord(await get("blob", track)),
+
+  /** Store a clip. Pinned entries are never evicted, whatever the cap says. */
+  async put(track, blob, { pinned = false } = {}) {
+    await put("blob", track, { blob, at: Date.now(), pinned });
+    await audioCache.enforceCap();
+  },
+
   del: (track) => del("blob", track),
-  has: async (track) => (await get("blob", track)) != null,
-  size: async () => {
-    const ks = await keys("blob");
-    let n = 0;
-    for (const k of ks) { const b = await get("blob", k); if (b) n += b.size; }
+
+  /**
+   * Remove it AND remember the choice, so automatic caching does not put it back
+   * on the next play. Without this an explicit delete would look like it had been
+   * ignored, which is worse than not offering the delete.
+   */
+  async dismiss(track) {
+    await del("blob", track).catch(() => {});
+    const list = read(DISMISSED_KEY, []).filter((t) => t !== track);
+    list.unshift(track);
+    write(DISMISSED_KEY, list.slice(0, DISMISSED_MAX));
+  },
+  isDismissed: (track) => read(DISMISSED_KEY, []).includes(track),
+  undismiss(track) {
+    write(DISMISSED_KEY, read(DISMISSED_KEY, []).filter((t) => t !== track));
+  },
+  dismissed: () => read(DISMISSED_KEY, []),
+  /** Forget every "do not cache this" choice, so those clips cache again. */
+  clearDismissed() {
+    const n = read(DISMISSED_KEY, []).length;
+    write(DISMISSED_KEY, []);
     return n;
+  },
+
+  /** Keep this one regardless of eviction, or release it. */
+  async pin(track, v = true) {
+    const r = asRecord(await get("blob", track));
+    if (!r) return false;
+    await put("blob", track, { ...r, pinned: !!v });
+    return true;
+  },
+
+  has: async (track) => (await get("blob", track)) != null,
+
+  async stats() {
+    const ks = await keys("blob");
+    let bytes = 0, pinned = 0;
+    for (const k of ks) {
+      const r = asRecord(await get("blob", k));
+      if (!r) continue;
+      bytes += r.blob.size || 0;
+      if (r.pinned) pinned += 1;
+    }
+    return { count: ks.length, bytes, pinned, cap: AUDIO_CAP_BYTES };
+  },
+  size: async () => (await audioCache.stats()).bytes,
+
+  /** Drop least-recently-used unpinned entries until the total fits the cap. */
+  async enforceCap(maxBytes = AUDIO_CAP_BYTES) {
+    const rows = [];
+    for (const k of await keys("blob")) {
+      const r = asRecord(await get("blob", k));
+      if (r) rows.push({ k, at: r.at || 0, size: r.blob.size || 0, pinned: !!r.pinned });
+    }
+    let total = rows.reduce((a, r) => a + r.size, 0);
+    if (total <= maxBytes) return { evicted: 0, bytes: total };
+    rows.sort((a, b) => a.at - b.at);            // oldest first
+    let evicted = 0;
+    for (const r of rows) {
+      if (total <= maxBytes) break;
+      if (r.pinned) continue;                    // "keep this one" means exactly that
+      await del("blob", r.k).catch(() => {});
+      total -= r.size;
+      evicted += 1;
+    }
+    return { evicted, bytes: total };
+  },
+
+  async clear() {
+    const ks = await keys("blob");
+    for (const k of ks) await del("blob", k).catch(() => {});
+    return ks.length;
   },
 };

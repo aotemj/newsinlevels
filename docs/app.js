@@ -313,6 +313,9 @@ function markAudioButton() {
   audioCache.has(l.audio.track).then((has) => {
     b.textContent = has ? "Audio offline ✓" : "Keep audio offline";
     b.setAttribute("aria-pressed", has ? "true" : "false");
+    b.title = has
+      ? "Saved on this device, so it plays with no network. Tap to remove it."
+      : "Play it once and it is kept automatically; tap to keep it now.";
   });
 }
 
@@ -333,7 +336,9 @@ function bindReaderTools() {
   if (af) af.addEventListener("click", async () => {
     const l = current.data.levels[current.lv];
     if (!l.audio || !l.audio.track) return;
-    if (await audioCache.has(l.audio.track)) { await audioCache.del(l.audio.track); toast("Offline copy removed"); }
+    // dismiss(), not del(): automatic caching would otherwise put the clip straight
+    // back on the next play, making the button look broken.
+    if (await audioCache.has(l.audio.track)) { await audioCache.dismiss(l.audio.track); player.saved = false; toast("Offline copy removed"); }
     else { toast("Saving…"); await player.download(); }
     markAudioButton();
   });
@@ -574,8 +579,49 @@ function openSetup() {
       Auto sentence timings:
       <button class="pill-btn" id="wauto" aria-pressed="${settings.autoSeg}">
         ${settings.autoSeg ? "on" : "off"}</button>
+    </div>
+    <div class="pnote" style="margin-top:8px">
+      Keep audio offline:
+      <button class="pill-btn" id="woffl" aria-pressed="${settings.cacheAudio}">
+        ${settings.cacheAudio ? "on" : "off"}</button>
+      <span id="wsize">…</span>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="waudioclear">Clear offline audio</button>
+      <button id="waudioreset">Allow re-caching removed</button>
     </div>`;
   const stat = (m) => { sheet.querySelector("#wstat").textContent = m; };
+  // Usage matters here: the cache is capped, and it evicts least-recently-used
+  // clips, so being able to see what it holds turns "why is this gone" into a glance.
+  const sizeLine = async () => {
+    const el = sheet.querySelector("#wsize");
+    const s = await audioCache.stats().catch(() => null);
+    if (!el || !s) return;
+    const mb = (s.bytes / 1048576).toFixed(1);
+    el.textContent = s.count
+      ? `— ${s.count} clip(s), ${mb} MB of ${Math.round(s.cap / 1048576)} MB${s.pinned ? `, ${s.pinned} kept` : ""}`
+      : "— nothing stored yet";
+  };
+  sizeLine();
+  sheet.querySelector("#woffl").addEventListener("click", (e) => {
+    settings.cacheAudio = !settings.cacheAudio;
+    e.target.setAttribute("aria-pressed", settings.cacheAudio);
+    e.target.textContent = settings.cacheAudio ? "on" : "off";
+    stat(settings.cacheAudio
+      ? "Clips you play will be kept on this device for offline use."
+      : "Clips will no longer be kept automatically.");
+  });
+  sheet.querySelector("#waudioclear").addEventListener("click", async () => {
+    const n = await audioCache.clear();
+    stat(`Removed ${n} offline clip(s).`);
+    sizeLine();
+  });
+  // Removing a clip also records "do not cache this again", which is otherwise
+  // invisible state the reader could never undo.
+  sheet.querySelector("#waudioreset").addEventListener("click", () => {
+    const n = audioCache.clearDismissed();
+    stat(`Cleared ${n} removal(s) — those clips will be cached again when played.`);
+  });
   sheet.querySelector("#wclose").addEventListener("click", close);
   sheet.querySelector("#wsave").addEventListener("click", () => {
     settings.worker = sheet.querySelector("#wu").value.trim().replace(/\/+$/, "");
@@ -712,6 +758,10 @@ player.addEventListener("saved", (e) => {
   else toast(`Saved ${(e.detail.bytes / 1024 / 1024).toFixed(1)} MB for offline`);
   markAudioButton();
 });
+// Auto-caching is deliberately silent -- a toast per clip would be noise -- but the
+// reader's offline indicator has to follow it, or "Audio offline ✓" would only
+// appear after a reload.
+player.addEventListener("cached", () => markAudioButton());
 
 /* ------------------------------------------------------------------ boot */
 applyTheme();

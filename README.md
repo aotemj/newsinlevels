@@ -34,7 +34,33 @@ No server, no build step, no dependencies. It runs as a PWA from GitHub Pages.
 
 **Keeping track**
 - Saved stories, word list with a day streak, continue-reading history
-- Offline: the app shell always works offline, and any clip you tap *Keep audio offline* plays with no network
+- Offline: the app shell always works offline, and audio is kept automatically — play
+  a clip once and it plays with no network afterwards. See below for the limits.
+
+### Offline audio, and why it is automatic
+
+A clip you play is stored on the device. That is the default because the alternative
+is a *download* button nobody remembers to press before getting on a plane, and the
+bytes were already on the way past: the sentence-timing pass downloads the whole clip
+to find the pauses in it, so keeping a copy costs **no extra bandwidth** at all. Only
+when that pass will not run (no resolver, or timings already cached) is a separate
+background fetch made — and never on the critical path, so caching can't delay
+playback.
+
+Unbounded growth is the obvious risk (roughly 1 MB per level, so a few hundred MB if
+you read everything), so:
+
+| | |
+|---|---|
+| Cap | **150 MB**, evicted least-recently-*used* |
+| Kept | anything you pressed *Keep offline* for — **never** evicted, and if it is already cached that press costs no download |
+| Removed | a clip you delete is remembered as not-wanted, so it is not silently cached again. *setup → Allow re-caching removed* undoes that |
+| Off | *setup → Keep audio offline* turns the whole thing off |
+| Data Saver | respected — with it on, nothing is cached automatically |
+
+`setup` shows the current usage (`N clips, X MB of 150 MB, N kept`) and has
+*Clear offline audio*. Your words, favourites and progress are separate and are never
+touched by any of this.
 
 ---
 

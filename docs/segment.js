@@ -185,8 +185,14 @@ export function align(sentenceTexts, spans) {
   };
 }
 
-/** Full pipeline: fetch bytes -> decode -> spans -> align. */
-export async function segmentUrl(url, sentenceTexts, onProgress = () => {}) {
+/** Full pipeline: fetch bytes -> decode -> spans -> align.
+ *
+ *  `onBytes` receives the clip as a Blob on the way past. The timing pass downloads
+ *  the whole file anyway, so handing it over is how playback gets cached for offline
+ *  use at no extra bandwidth -- the alternative would be fetching the same bytes a
+ *  second time.
+ */
+export async function segmentUrl(url, sentenceTexts, onProgress = () => {}, onBytes = null) {
   onProgress("downloading audio");
   // Mark failures that mean "the bytes never arrived" -- the caller retries those
   // on a different delivery route, and must NOT retry a genuine alignment failure.
@@ -207,6 +213,12 @@ export async function segmentUrl(url, sentenceTexts, onProgress = () => {}) {
   }
   const buf = await resp.arrayBuffer();
   onProgress(`decoding ${(buf.byteLength / 1024 | 0)} KB`);
+  // Hand the clip to the caller before decoding, so an offline copy can be stored
+  // without a second download of the same bytes.
+  if (onBytes) {
+    try { onBytes(new Blob([buf], { type: resp.headers.get("content-type") || "audio/mpeg" })); }
+    catch { /* a failure to copy must not break the timing pass */ }
+  }
   const decoded = await decode(buf);
   onProgress("finding sentence pauses");
   const { spans, noiseFloor, speechLevel, threshold } = findSpans(decoded);
