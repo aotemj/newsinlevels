@@ -192,7 +192,7 @@ let started = false;
       seen.push(audio.playbackRate);
     }
     const want = RATES.map((_, i) => RATES[(startIdx + 1 + i) % RATES.length]);
-    note('player.rate_cycle', seen);
+    note('player.rate_cycle', [...seen]);
     note('player.rate_cycle_is_the_presets', JSON.stringify(seen) === JSON.stringify(want),
       `${seen.join(" -> ")} (wanted ${want.join(" -> ")})`);
     note('player.rate_label', pl.querySelector('[data-a="rate"]').textContent.trim());
@@ -252,6 +252,68 @@ let started = false;
     ac.clearDismissed();
     const cleared = await ac.clear();
     note('audio.clear_empties_the_store', cleared >= 1 && (await ac.stats()).count === 0);
+
+    // ---------- keyboard shortcuts: Space toggles, arrows seek ±5s
+    // Spies rather than real media state: whether audio actually plays depends on the
+    // network, but the key wiring has to hold either way.
+    const fired = [];
+    const realToggle = N.player.toggle.bind(N.player);
+    const realNudge = N.player.nudge.bind(N.player);
+    N.player.toggle = () => { fired.push('toggle'); };
+    N.player.nudge = (delta) => { fired.push(`nudge:${delta}`); return 0; };
+    const press = (el, key, opts = {}) => el.dispatchEvent(
+      new w.KeyboardEvent('keydown', Object.assign({ key, bubbles: true }, opts)));
+
+    press(d, ' ', { code: 'Space' });
+    press(d, 'ArrowRight');
+    press(d, 'ArrowLeft');
+    // NB: copy the array. note() records the *reference*, and the assertions below
+    // reset `fired` with .length = 0 -- which emptied the earlier step in the final
+    // report and made a working handler look like a dead one.
+    note('keys.space_and_arrows', [...fired]);
+
+    // A focused button already activates on Space, so handling it here as well would
+    // fire the action twice. (A synthetic event has no default action, so this asserts
+    // our handler stays out of the way rather than that the button clicked.)
+    fired.length = 0;
+    const focusBtn = pl.querySelector('[data-a="ab"]');
+    focusBtn.focus();
+    press(focusBtn, ' ', { code: 'Space' });
+    press(focusBtn, 'ArrowRight');
+    note('keys.ignores_a_focused_button', fired.length === 0, focusBtn.tagName);
+
+    // Typing must never reach the player.
+    fired.length = 0;
+    const inp = d.createElement('input');
+    d.body.appendChild(inp);
+    inp.focus();
+    press(inp, ' ', { code: 'Space' });
+    press(inp, 'ArrowRight');
+    note('keys.ignores_typing', fired.length === 0);
+    inp.remove();
+
+    // A dialog owns the keyboard while it is up.
+    fired.length = 0;
+    const fakeSheet = d.createElement('div');
+    fakeSheet.className = 'sheet';
+    d.body.appendChild(fakeSheet);
+    d.body.focus();
+    press(d, ' ', { code: 'Space' });
+    note('keys.ignores_while_a_dialog_is_open', fired.length === 0);
+    fakeSheet.remove();
+
+    // On the story list the player is hidden, so Space and the arrows must keep
+    // scrolling the page instead of being swallowed.
+    fired.length = 0;
+    pl.hidden = true;
+    press(d, ' ', { code: 'Space' });
+    press(d, 'ArrowRight');
+    press(d, 'ArrowLeft');
+    note('keys.inactive_when_no_clip_is_showing', fired.length === 0);
+    pl.hidden = false;
+
+    N.player.toggle = realToggle;
+    N.player.nudge = realNudge;
 
     // ---------- word sheet
     const bold = d.querySelector('#reader-body .article strong.w');

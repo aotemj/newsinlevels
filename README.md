@@ -19,12 +19,14 @@ No server, no build step, no dependencies. It runs as a PWA from GitHub Pages.
 ## What it does
 
 **Listening**
-- 0.5×–1.5× speed, remembered as your default
+- Speed as presets — one tap cycles 0.75× / 1× / 1.25× / 1.5× / 2×, remembered across sessions (clicking is unambiguous in a way dragging a slider never was)
 - **Whole-clip loop** for passive listening
 - **A–B loop** — drop two markers on the scrub bar and loop that exact span
 - **Per-sentence loop** — loop just the sentence you're stuck on
 - **Shadowing mode** — plays a sentence, goes quiet so you can repeat it out loud, plays it again, then moves on (repeats and gap length are configurable)
 - **Tap any sentence in the text** to jump the audio there
+- **Keyboard on desktop** — `Space` plays/pauses and `←`/`→` jump 5 seconds, both while the controls are folded away. Keys are deliberately *not* claimed on the story list or while a field has focus, so scrolling and typing behave normally.
+- **The controls start folded away** — a slim row, so they never sit on the last lines of an article. Tapping it opens the full panel *over* the article rather than pushing it down, so the text never jumps.
 - Background playback with lock-screen / notification controls (Media Session)
 
 **Reading**

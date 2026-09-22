@@ -137,6 +137,9 @@ export const nextRate = (v) => RATES[(RATES.indexOf(nearestRate(v)) + 1) % RATES
 /** "1×", "0.75×", "1.25×" -- no trailing zeros. */
 export const rateLabel = (v) => `${nearestRate(v)}×`;
 
+/** Seconds the arrow keys jump. */
+export const KEY_JUMP = 5;
+
 class Player extends EventTarget {
   constructor() {
     super();
@@ -166,11 +169,46 @@ class Player extends EventTarget {
     // covered; expanding is a deliberate tap and overlays the article rather than
     // reflowing it, so the text never jumps.
     this.collapsed = true;
-    // Escape folds it back on desktop. Bound once on the singleton, not per repaint.
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && !this.collapsed) this.setCollapsed(true);
-    });
+    // Keyboard handling for when a mouse is the awkward input. Bound once on the
+    // singleton, not per repaint.
+    document.addEventListener("keydown", (e) => this._onKey(e));
     this._wire();
+  }
+
+  /**
+   * Space = play/pause, Left/Right = ±5s, Escape = fold the controls away.
+   *
+   * Deliberately conservative about what it claims: keys are left to the browser
+   * whenever the player is not showing a clip (so they scroll the story list as
+   * usual), whenever a form field has focus (typing a resolver URL must not toggle
+   * playback), while a dialog is open, and when the focused element is a button --
+   * Space already activates a focused button, and handling it here as well would fire
+   * the action twice.
+   */
+  _onKey(e) {
+    const t = e.target;
+    const tag = (t && t.tagName) || "";
+    const typing = !!(t && (t.isContentEditable || /^(input|textarea|select)$/i.test(tag)));
+    if (typing || document.querySelector(".sheet")) return;
+
+    if (e.key === "Escape") {
+      if (!this.collapsed) { this.setCollapsed(true); e.preventDefault(); }
+      return;
+    }
+
+    // "Showing a clip", not "currently audible": the shortcuts should work while
+    // paused too.
+    const hasClip = !!(this.el && !this.el.hidden && this.track);
+    if (!hasClip) return;                        // let the browser scroll
+    if (/^(button|a|summary|option)$/i.test(tag)) return;
+
+    if (e.code === "Space" || e.key === " " || e.key === "Spacebar") {
+      e.preventDefault();                        // otherwise the page scrolls
+      this.toggle();
+      return;
+    }
+    if (e.key === "ArrowRight") { e.preventDefault(); this.nudge(KEY_JUMP); return; }
+    if (e.key === "ArrowLeft") { e.preventDefault(); this.nudge(-KEY_JUMP); }
   }
 
   /* ------------------------------------------------------------- plumbing */
@@ -345,6 +383,22 @@ class Player extends EventTarget {
   seek(t, keepPaused = false) {
     this.audio.currentTime = clamp(t, 0, this.audio.duration || t);
     if (!keepPaused) this._repaint();
+  }
+
+  /**
+   * Jump `delta` seconds from the playhead, clamped to the clip -- the arrow keys use
+   * ±KEY_JUMP. Paints the new position directly instead of repainting the panel, so
+   * holding the key down stays smooth, and it never changes whether audio is playing.
+   */
+  nudge(delta) {
+    if (!this.track) return null;
+    const from = this.audio.currentTime || 0;
+    const d = this._effectiveDuration();
+    const to = clamp(from + delta, 0, d > 0 ? d : from + delta);
+    try { this.audio.currentTime = to; } catch { return null; }
+    this._paintNow(to);
+    this._emit("jump", { from, to, delta });
+    return to;
   }
   /** Accepts a preset or anything else; anything else snaps to the nearest preset. */
   setRate(r) {
@@ -620,7 +674,8 @@ class Player extends EventTarget {
     // without a per-tick repaint of the whole panel.
     const collapsedRow = `
       <div class="pbar" data-a="bar">
-        <button class="pbtn primary" data-a="toggle" aria-label="Play or pause">
+        <button class="pbtn primary" data-a="toggle" title="Play or pause (Space)"
+                aria-keyshortcuts="Space" aria-label="Play or pause">
           ${a.paused ? ICON.play : ICON.pause}
         </button>
         <span class="ptime" data-t="now">${fmt(t)}</span>
@@ -635,7 +690,8 @@ class Player extends EventTarget {
     const expandedPanel = `
       <div class="prow">
         <button class="pbtn" data-a="prev" ${seg ? "" : "disabled"} aria-label="Previous sentence">${ICON.prev}</button>
-        <button class="pbtn primary" data-a="toggle" aria-label="Play or pause">
+        <button class="pbtn primary" data-a="toggle" title="Play or pause (Space)"
+                aria-keyshortcuts="Space" aria-label="Play or pause">
           ${a.paused ? ICON.play : ICON.pause}
         </button>
         <button class="pbtn" data-a="next" ${seg ? "" : "disabled"} aria-label="Next sentence">${ICON.next}</button>
